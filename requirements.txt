@@ -1,0 +1,12 @@
+streamlit==1.45.1
+pandas==2.2.3
+plotly==6.0.1
+numpy==2.2.4
+scikit-learn
+xgboost
+shap
+joblib
+langgraph
+langchain
+langchain-community
+python-dotenv

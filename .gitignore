@@ -1,0 +1,69 @@
+# -----------------------------
+# Python
+# -----------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# -----------------------------
+# Secrets / local config
+# -----------------------------
+.env
+.env.*
+!.env.example
+
+# -----------------------------
+# Runtime artifacts
+# -----------------------------
+*.log
+logs/
+outputs/
+
+# Model / binary artifacts
+models/*.joblib
+models/*.pkl
+models/*.bin
+*.h5
+*.onnx
+
+# -----------------------------
+# Streamlit
+# -----------------------------
+.streamlit/secrets.toml
+
+# -----------------------------
+# Frontend / JS (future-proof)
+# -----------------------------
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# -----------------------------
+# OS / Editor
+# -----------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
