@@ -1,153 +1,193 @@
 # AI-Powered Smart RCM Prototype
 
-This repository contains a Streamlit-based Revenue Cycle Management (RCM) prototype with:
+AI-powered Revenue Cycle Management prototype with Streamlit dashboard, ML models, agentic claim orchestration, LangGraph chatbot, and a React demo UI.
 
-- Predictive denial modeling (XGBoost + SHAP)
-- Smart claim scrubbing (CPT-ICD mismatch probability + recommendation)
-- Appeals prioritization (success probability + expected recovery)
-- Fraud enhancement (supervised fraud probability + Isolation Forest anomaly signal)
-- Agentic workflow demo (coordinator + specialized agents)
-- LangGraph chatbot for claim-level conversational insights
-- Groq/Ollama-based 2-page summary generation for demo artifacts
+## What Is Implemented
+
+- Predictive denial intelligence (`XGBoost` + SHAP explainability)
+- Smart claim scrubbing (`CPT-ICD` mismatch risk + recommendations)
+- Appeals prioritization (success probability + expected recovery estimate)
+- Fraud enhancement (supervised risk + `IsolationForest` anomaly blending)
+- Patient access and eligibility risk scoring
+- Payment reconciliation risk scoring
+- Revenue trend forecasting and what-if style exploration
+- Agentic workflow (`CoordinatorAgent` + specialized agents)
+- LangGraph claim-level chatbot in Streamlit
+- 2-page narrative summary generation via Groq or Ollama
+- Lightweight Python backend API + React (no-build CDN) UI
 
 ---
 
-## Prototype Architecture
+## Repository Components
+
+- `app.py` - Main Streamlit dashboard
+- `ml_engine.py` - Model train/load/score pipeline
+- `data_loader.py` - CSV loading + feature preparation
+- `rcm_agent.py` - Coordinator and specialist agents
+- `langgraph_rcm_chatbot.py` - LangGraph claim chatbot flow
+- `custom_coding_agent.py` - CPT/ICD coding recommendation logic
+- `clinical_nlp_agent.py` - Clinical note to ICD prediction support
+- `groq_agent_summary.py` - Groq-based 2-page summary generation
+- `ollama_agent_summary.py` - Ollama-based 2-page summary generation
+- `backend_api.py` - API for React dashboard
+- `frontend/` - React dashboard prototype (served as static files)
+
+---
+
+## Architecture
 
 ```mermaid
 flowchart LR
-    A[CSV Data Sources<br/>claims, denials, appeals, payments,<br/>fraud, scrubbing, icd, cpt_lines, events] --> B[data_loader.py<br/>build_master + get_cpt_summary]
-    B --> C[ml_engine.py<br/>Model Training + Scoring]
-    C --> D[models/*.joblib<br/>Persisted Artifacts]
-    B --> E[app.py<br/>Streamlit Dashboard]
+    A[CSV Data in data/] --> B[data_loader.py]
+    B --> C[ml_engine.py]
+    C --> D[models/*.joblib]
+    B --> E[app.py Streamlit]
     C --> E
-    F[rcm_agent.py<br/>Coordinator + Agents] --> E
-    G[langgraph_rcm_chatbot.py<br/>LangGraph Flow] --> E
-    H[groq_agent_summary.py<br/>2-page summary via Groq] --> E
-    I[ollama_agent_summary.py<br/>2-page summary via Ollama] --> E
+    F[rcm_agent.py] --> E
+    G[langgraph_rcm_chatbot.py] --> E
+    H[groq_agent_summary.py / ollama_agent_summary.py] --> E
+    B --> I[backend_api.py]
+    C --> I
+    F --> I
+    I --> J[frontend/app.js React UI]
 ```
 
 ---
 
-## ML Pipeline (Training + Inference)
+## ML and Agent Flow
 
 ```mermaid
 flowchart TD
     A[build_master + get_cpt_summary] --> B[Feature Engineering]
-    B --> C1[Denial Model<br/>XGBoost Classifier]
-    B --> C2[Mismatch Model<br/>XGBoost Classifier]
-    B --> C3[Appeals Success<br/>XGBoost Classifier]
-    B --> C4[Appeals Recovery<br/>XGBoost Regressor]
-    B --> C5[Fraud Probability<br/>XGBoost Classifier]
-    A --> C6[Fraud Anomaly<br/>Isolation Forest]
-
-    C1 --> D1[denial_probability + SHAP]
-    C2 --> D2[mismatch_probability]
-    C3 --> D3[p_appeal_success]
-    C4 --> D4[expected_recovery]
-    C5 --> D5[fraud_probability]
-    C6 --> D6[anomaly_probability]
-
-    D5 --> E[fraud_probability_improved<br/>weighted blend]
-    D6 --> E
+    B --> C1[Denial Model]
+    B --> C2[Mismatch Model]
+    B --> C3[Appeals Success Model]
+    B --> C4[Appeals Recovery Model]
+    B --> C5[Fraud Probability Model]
+    B --> C6[Eligibility Risk Model]
+    B --> C7[Reconciliation Risk Model]
+    A --> C8[Fraud Anomaly Model]
+    A --> C9[Revenue Forecast Model]
+    A --> D[CoordinatorAgent]
+    C1 --> D
+    C2 --> D
+    C3 --> D
+    C4 --> D
+    C5 --> D
+    C8 --> D
+    C7 --> D
+    D --> E[Observe -> Think -> Plan -> Act -> Learn]
 ```
 
 ---
 
-## Agentic Workflow (Prototype)
-
-```mermaid
-flowchart LR
-    A[Claim Selected] --> B[Coordinator Agent]
-    B --> C[Denial Prediction Agent]
-    B --> D[Scrubbing Agent]
-    B --> E[Appeals Agent]
-    B --> F[Fraud Agent]
-
-    C --> G[Risk Assessment]
-    D --> H[Recommendation<br/>Is claim mein Auth required add kar do]
-    E --> I[Appealability + Draft Letter]
-    F --> J[Fraud Review Flag]
-
-    G --> K[Final Action Plan]
-    H --> K
-    I --> K
-    J --> K
-    K --> L[Human-in-the-loop Approval]
-```
-
----
-
-## LangGraph Chatbot Flow
-
-```mermaid
-flowchart TD
-    A[User Message + Claim ID] --> B[Prepare Claim Insights<br/>denial, mismatch, appeals, fraud]
-    B --> C[LangGraph Node: decide_topics]
-    C --> D[LangGraph Node: generate_response]
-    D --> E[Chat Response in Streamlit]
-
-    F[Optional SHAP Request<br/>why/shap/driver] --> G[predict_single_claim + SHAP]
-    G --> D
-```
-
----
-
-## Main Application Pages
+## Dashboard Pages (Streamlit)
 
 - Executive Summary
+- Patient Access & Eligibility
 - Denial Intelligence
 - Appeals Analytics
 - Fraud Detection
 - Smart Scrubbing
+- Payment Reconciliation
+- Revenue Forecasting
+- Monitoring & Alerts
 - AR Aging & Lifecycle
+- Agentic RCM Agent
+- LangGraph Chatbot
 - AI Denial Predictor
-- Agentic RCM Agent (Demo)
-- LangGraph Chatbot (Demo)
 
 ---
 
-## Run Locally
+## Setup
+
+### 1) Create environment and install dependencies
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+```
+
+### 2) Configure optional environment variables
+
+Create or update `.env` in project root:
+
+```env
+# Groq (optional)
+GROQ_API_KEY=""
+GROQ_MODEL=llama-3.3-70b-versatile
+
+# Ollama (optional)
+OLLAMA_MODEL=llama3:8b
+```
+
+`app.py` loads this automatically using `python-dotenv`.
+
+---
+
+## Run the System
+
+### Option A: Main Streamlit application (recommended)
+
+```bash
+source venv/bin/activate
 streamlit run app.py
 ```
 
-### Optional: React UI Prototype (No Node Required)
+Open the URL shown by Streamlit (usually `http://localhost:8501`).
 
-A polished React-based no-build UI is available in `frontend/` for presentation/demo.
+### Option B: React demo UI with backend API
 
-Run:
+Run backend API:
 
 ```bash
+source venv/bin/activate
 python3 backend_api.py
 ```
 
-API endpoints:
-- `GET /api/health`
-- `GET /api/summary`
-- `GET /api/agent/claim/<claim_id>`
-
-In another terminal:
+In another terminal, serve frontend:
 
 ```bash
 cd frontend
 python3 -m http.server 8080
 ```
 
-Then open:
+Open `http://localhost:8080`.
 
-- http://localhost:8080
+If you serve from project root, `index.html` redirects to `frontend/index.html`.
+
+---
+
+## API Endpoints
+
+From `backend_api.py`:
+
+- `GET /api/health`
+- `GET /api/summary`
+- `GET /api/agent/claim/<claim_id>`
+
+Base URL: `http://localhost:8001`
+
+---
+
+## LLM Summary Generation
+
+In Streamlit (`Agentic RCM Agent` page):
+
+- **Groq summary**: requires `GROQ_API_KEY`
+- **Ollama summary**: requires local Ollama server running
+
+Example Ollama run command:
+
+```bash
+ollama serve
+```
 
 ---
 
 ## Notes
 
-- This is a prototype/demo implementation.
-- Models are trained from CSV datasets in `data/` and persisted in `models/`.
-- Summary generation supports:
-  - Groq (`GROQ_API_KEY` required)
-  - Ollama (local server required)
+- This is a prototype focused on demoability and extensibility.
+- Models are trained from local CSV data and persisted under `models/`.
+- If model files are missing, training is triggered automatically in relevant flows.
