@@ -15,6 +15,7 @@ from sklearn.metrics import (
     accuracy_score, confusion_matrix, roc_curve,
 )
 from sklearn.ensemble import IsolationForest
+from sklearn.linear_model import LinearRegression
 from xgboost import XGBClassifier, XGBRegressor
 import shap
 
@@ -244,6 +245,10 @@ FRAUD_PROB_META_PATH = os.path.join(MODEL_DIR, "fraud_probability_model_meta.job
 
 FRAUD_ANOMALY_MODEL_PATH = os.path.join(MODEL_DIR, "fraud_anomaly_model.joblib")
 FRAUD_ANOMALY_META_PATH = os.path.join(MODEL_DIR, "fraud_anomaly_model_meta.joblib")
+ELIGIBILITY_MODEL_PATH = os.path.join(MODEL_DIR, "eligibility_risk_model.joblib")
+ELIGIBILITY_META_PATH = os.path.join(MODEL_DIR, "eligibility_risk_meta.joblib")
+RECON_MODEL_PATH = os.path.join(MODEL_DIR, "reconciliation_risk_model.joblib")
+RECON_META_PATH = os.path.join(MODEL_DIR, "reconciliation_risk_meta.joblib")
 
 
 CAT_FEATURES_BASE = ["insurance", "visit_type", "icd_code", "gender"]
@@ -270,6 +275,16 @@ class ConstantProbabilityModel:
 
 class ConstantRegressorModel:
     """Simple fallback regressor returning a fixed value."""
+
+    def __init__(self, value: float):
+        self.value = float(value)
+
+    def predict(self, X):
+        return np.full(len(X), self.value, dtype=float)
+
+
+class ConstantForecastModel:
+    """Simple fallback forecaster with fixed value."""
 
     def __init__(self, value: float):
         self.value = float(value)
@@ -756,3 +771,221 @@ def score_fraud_enhanced(master_df: pd.DataFrame, cpt_summary_df: pd.DataFrame,
     out["fraud_anomaly_probability"] = p_anomaly
     out["fraud_probability_improved"] = improved
     return out
+
+
+# ============================================================
+# Front-End Automation: Eligibility Risk Model
+# ============================================================
+
+ELIGIBILITY_FEATURES = [
+    "insurance",
+    "visit_type",
+    "claim_amount",
+    "age",
+    "high_amount_flag",
+    "strict_insurance_flag",
+    "insurance_match_flag",
+]
+
+
+def _build_eligibility_feature_df(master_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    df = master_df.copy()
+    if "insurance_pat" not in df.columns:
+        df["insurance_pat"] = df["insurance"]
+    df["insurance_pat"] = df["insurance_pat"].fillna("Unknown")
+    df["insurance_match_flag"] = (df["insurance"].astype(str) == df["insurance_pat"].astype(str)).astype(int)
+    df["high_amount_flag"] = df["high_amount_flag"].fillna(False).astype(int)
+    df["strict_insurance_flag"] = df["strict_insurance_flag"].fillna(False).astype(int)
+
+    cat_cols = ["insurance", "visit_type"]
+    num_cols = ["claim_amount", "age", "high_amount_flag", "strict_insurance_flag", "insurance_match_flag"]
+    ohe = pd.get_dummies(df[cat_cols], drop_first=False)
+    X = pd.concat([df[num_cols], ohe], axis=1).fillna(0)
+    feature_cols = list(X.columns)
+    return X, feature_cols
+
+
+def train_eligibility_risk_model(master_df: pd.DataFrame):
+    """
+    Predict eligibility/registration risk using proxy target:
+      denial_reason in {'Coverage', 'Auth required'}.
+    """
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    X, feature_cols = _build_eligibility_feature_df(master_df)
+    y = master_df["denial_reason"].fillna("None").isin(["Coverage", "Auth required"]).astype(int).values
+
+    # Degenerate labels fallback
+    if len(np.unique(y)) < 2:
+        model = ConstantProbabilityModel(float(np.mean(y)))
+        probs = model.predict_proba(X)[:, 1]
+        metrics = {"auc": None, "note": "Single-class labels; constant fallback."}
+        joblib.dump(model, ELIGIBILITY_MODEL_PATH)
+        joblib.dump({"feature_cols": feature_cols, "metrics": metrics, "all_probabilities": probs}, ELIGIBILITY_META_PATH)
+        return {"model": model, "meta": {"feature_cols": feature_cols, "metrics": metrics, "all_probabilities": probs}}
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    n_neg = (y_train == 0).sum()
+    n_pos = (y_train == 1).sum()
+    scale_weight = n_neg / n_pos if n_pos > 0 else 1.0
+
+    model = XGBClassifier(
+        max_depth=5,
+        n_estimators=180,
+        learning_rate=0.08,
+        scale_pos_weight=scale_weight,
+        eval_metric="logloss",
+        use_label_encoder=False,
+        random_state=42,
+        n_jobs=-1,
+    )
+    model.fit(X_train, y_train)
+    y_prob = model.predict_proba(X_test)[:, 1]
+    y_pred = (y_prob >= 0.5).astype(int)
+    metrics = {
+        "auc": roc_auc_score(y_test, y_prob) if len(np.unique(y_test)) > 1 else None,
+        "precision": precision_score(y_test, y_pred, zero_division=0),
+        "recall": recall_score(y_test, y_pred, zero_division=0),
+        "f1": f1_score(y_test, y_pred, zero_division=0),
+        "accuracy": accuracy_score(y_test, y_pred),
+    }
+    all_probs = model.predict_proba(X)[:, 1]
+    joblib.dump(model, ELIGIBILITY_MODEL_PATH)
+    joblib.dump({"feature_cols": feature_cols, "metrics": metrics, "all_probabilities": all_probs}, ELIGIBILITY_META_PATH)
+    return {"model": model, "meta": {"feature_cols": feature_cols, "metrics": metrics, "all_probabilities": all_probs}}
+
+
+def load_eligibility_risk_model():
+    if os.path.exists(ELIGIBILITY_MODEL_PATH) and os.path.exists(ELIGIBILITY_META_PATH):
+        return joblib.load(ELIGIBILITY_MODEL_PATH), joblib.load(ELIGIBILITY_META_PATH)
+    return None, None
+
+
+def score_eligibility_risk(master_df: pd.DataFrame, model, feature_cols: list[str]) -> np.ndarray:
+    X, _ = _build_eligibility_feature_df(master_df)
+    X = X.reindex(columns=feature_cols, fill_value=0)
+    return model.predict_proba(X)[:, 1]
+
+
+# ============================================================
+# Revenue Forecasting Model (monthly collected revenue)
+# ============================================================
+
+def fit_revenue_forecast_model(monthly_df: pd.DataFrame, value_col: str = "collected"):
+    """
+    Fit a simple linear trend model for monthly revenue forecasting.
+    Returns fitted values + next period forecast.
+    """
+    if monthly_df is None or len(monthly_df) == 0:
+        model = ConstantForecastModel(0.0)
+        return {"model": model, "fitted": np.array([]), "next_forecast": 0.0, "metrics": {"note": "No data"}}
+
+    y = monthly_df[value_col].fillna(0).values.astype(float)
+    X = np.arange(len(y)).reshape(-1, 1)
+
+    if len(y) < 2:
+        model = ConstantForecastModel(float(y.mean()))
+        fitted = model.predict(X)
+        next_forecast = float(model.predict(np.array([[len(y)]], dtype=float))[0])
+        return {"model": model, "fitted": fitted, "next_forecast": next_forecast, "metrics": {"note": "Insufficient history; constant fallback."}}
+
+    model = LinearRegression()
+    model.fit(X, y)
+    fitted = model.predict(X)
+    next_forecast = float(model.predict(np.array([[len(y)]], dtype=float))[0])
+    # R^2 as rough fit quality
+    r2 = float(model.score(X, y))
+    return {"model": model, "fitted": fitted, "next_forecast": next_forecast, "metrics": {"r2": r2}}
+
+
+# ============================================================
+# Payment Reconciliation Risk Model
+# ============================================================
+
+RECON_CAT_FEATURES = ["insurance", "visit_type", "icd_code"]
+RECON_NUM_FEATURES = ["claim_amount", "paid_amount", "revenue_leakage", "collection_rate", "age", "fraud_score"]
+RECON_BOOL_FEATURES = ["cpt_icd_mismatch", "high_amount_flag", "strict_insurance_flag", "is_denied"]
+
+
+def _build_recon_feature_df(master_df: pd.DataFrame):
+    df = master_df.copy()
+    for col in RECON_BOOL_FEATURES:
+        if col not in df.columns:
+            df[col] = False
+        df[col] = df[col].fillna(False).astype(int)
+
+    ohe = pd.get_dummies(df[RECON_CAT_FEATURES], drop_first=False)
+    ohe_cols = list(ohe.columns)
+    X = pd.concat([df[RECON_NUM_FEATURES + RECON_BOOL_FEATURES], ohe], axis=1).fillna(0)
+    feature_cols = list(X.columns)
+    return X, feature_cols
+
+
+def train_reconciliation_risk_model(master_df: pd.DataFrame):
+    """
+    Predict whether a claim likely needs reconciliation review.
+    Proxy target: posting_gap > dynamic threshold.
+    """
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    df = master_df.copy()
+    df["posting_gap"] = (df["claim_amount"] - df["paid_amount"]).clip(lower=0)
+    # Dynamic threshold at 60th percentile of non-zero gap (or 50 fallback).
+    non_zero = df[df["posting_gap"] > 0]["posting_gap"]
+    thresh = float(non_zero.quantile(0.6)) if len(non_zero) > 0 else 50.0
+    thresh = max(thresh, 50.0)
+    y = (df["posting_gap"] > thresh).astype(int).values
+
+    X, feature_cols = _build_recon_feature_df(df)
+
+    if len(np.unique(y)) < 2:
+        model = ConstantProbabilityModel(float(np.mean(y)))
+        all_probs = model.predict_proba(X)[:, 1]
+        metrics = {"auc": None, "note": "Single-class labels; constant fallback.", "gap_threshold": thresh}
+        joblib.dump(model, RECON_MODEL_PATH)
+        joblib.dump({"feature_cols": feature_cols, "metrics": metrics, "all_probabilities": all_probs}, RECON_META_PATH)
+        return {"model": model, "meta": {"feature_cols": feature_cols, "metrics": metrics, "all_probabilities": all_probs}}
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    n_neg = (y_train == 0).sum()
+    n_pos = (y_train == 1).sum()
+    scale_weight = n_neg / n_pos if n_pos > 0 else 1.0
+    model = XGBClassifier(
+        max_depth=5,
+        n_estimators=200,
+        learning_rate=0.08,
+        scale_pos_weight=scale_weight,
+        eval_metric="logloss",
+        use_label_encoder=False,
+        random_state=42,
+        n_jobs=-1,
+    )
+    model.fit(X_train, y_train)
+    y_prob = model.predict_proba(X_test)[:, 1]
+    y_pred = (y_prob >= 0.5).astype(int)
+    metrics = {
+        "auc": roc_auc_score(y_test, y_prob) if len(np.unique(y_test)) > 1 else None,
+        "precision": precision_score(y_test, y_pred, zero_division=0),
+        "recall": recall_score(y_test, y_pred, zero_division=0),
+        "f1": f1_score(y_test, y_pred, zero_division=0),
+        "accuracy": accuracy_score(y_test, y_pred),
+        "gap_threshold": thresh,
+    }
+    all_probs = model.predict_proba(X)[:, 1]
+    joblib.dump(model, RECON_MODEL_PATH)
+    joblib.dump({"feature_cols": feature_cols, "metrics": metrics, "all_probabilities": all_probs}, RECON_META_PATH)
+    return {"model": model, "meta": {"feature_cols": feature_cols, "metrics": metrics, "all_probabilities": all_probs}}
+
+
+def load_reconciliation_risk_model():
+    if os.path.exists(RECON_MODEL_PATH) and os.path.exists(RECON_META_PATH):
+        return joblib.load(RECON_MODEL_PATH), joblib.load(RECON_META_PATH)
+    return None, None
+
+
+def score_reconciliation_risk(master_df: pd.DataFrame, model, feature_cols: list[str]) -> np.ndarray:
+    X, _ = _build_recon_feature_df(master_df)
+    X = X.reindex(columns=feature_cols, fill_value=0)
+    return model.predict_proba(X)[:, 1]

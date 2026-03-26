@@ -137,6 +137,18 @@ class FraudAgent:
         }
 
 
+class ReconciliationAgent:
+    name = "Reconciliation Agent"
+
+    def run(self, reconciliation_risk_probability: float, threshold: float = 0.65) -> Dict[str, Any]:
+        high_recon_risk = reconciliation_risk_probability >= threshold
+        actions: List[str] = []
+        if high_recon_risk:
+            actions.append("Pre-flag claim for payment posting reconciliation review")
+            actions.append("Route remittance mapping check before final closure")
+        return {"high_recon_risk": high_recon_risk, "actions": actions}
+
+
 class CodingValidationAgent:
     name = "Coding Validation Agent"
 
@@ -190,6 +202,7 @@ class CoordinatorAgent:
         expected_recovery = float(predictions.get("expected_recovery", 0.0))
         coding_reco = predictions.get("coding_recommendation")
         nlp_coding_reco = predictions.get("nlp_coding_recommendation")
+        reconciliation_risk_probability = float(predictions.get("reconciliation_risk_probability", 0.0))
 
         # Observe
         steps.append(AgentStep(self.name, "Observe",
@@ -223,6 +236,14 @@ class CoordinatorAgent:
         else:
             steps.append(AgentStep(fraud_agent.name, "Plan", "Fraud risk within acceptable range."))
 
+        recon_agent = ReconciliationAgent()
+        recon_out = recon_agent.run(reconciliation_risk_probability)
+        if recon_out["high_recon_risk"]:
+            steps.append(AgentStep(recon_agent.name, "Plan",
+                                   f"Reconciliation risk flagged (p={reconciliation_risk_probability:.1%})."))
+        else:
+            steps.append(AgentStep(recon_agent.name, "Plan", "Reconciliation risk within acceptable range."))
+
         coding_agent = CodingValidationAgent()
         coding_out = coding_agent.run(coding_reco, mismatch_probability, nlp_coding_reco)
         if coding_out["needs_review"]:
@@ -234,6 +255,7 @@ class CoordinatorAgent:
         action_items.extend(scrub_out["actions"])
         action_items.extend(appeals_out["actions"])
         action_items.extend(fraud_out["actions"])
+        action_items.extend(recon_out["actions"])
         action_items.extend(coding_out["actions"])
 
         # Human-in-the-loop guardrail:
@@ -259,6 +281,8 @@ class CoordinatorAgent:
                 "denial_risk_level": denial_out["risk_level"],
                 "appealable": appeals_out["appealable"],
                 "high_fraud": fraud_out["high_fraud"],
+                "reconciliation_risk_probability": reconciliation_risk_probability,
+                "reconciliation_review_required": recon_out["high_recon_risk"],
                 "coding_review_required": coding_out["needs_review"],
                 "coding_recommendation": coding_reco.get("recommendation") if isinstance(coding_reco, dict) else None,
                 "nlp_coding_recommendation": nlp_coding_reco.get("recommendation") if isinstance(nlp_coding_reco, dict) else None,

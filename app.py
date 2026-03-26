@@ -135,10 +135,14 @@ with st.sidebar:
         "📊 Navigation",
         [
             "🏠 Executive Summary",
+            "🧾 Patient Access & Eligibility",
             "🚫 Denial Intelligence",
             "📋 Appeals Analytics",
             "🔍 Fraud Detection",
             "🧹 Smart Scrubbing",
+            "💳 Payment Reconciliation",
+            "📈 Revenue Forecasting",
+            "🖥️ Monitoring & Alerts",
             "⏱️ AR Aging & Lifecycle",
             "🤖 Agentic RCM Agent",
             "💬 LangGraph Chatbot",
@@ -1289,6 +1293,12 @@ def page_agentic_rcm_agent():
                 alpha=0.6,
             )
 
+        # reconciliation risk per claim
+        recon_model_local, recon_meta_local = ml_engine.load_reconciliation_risk_model()
+        recon_probs = None
+        if recon_model_local is not None and recon_meta_local is not None:
+            recon_probs = ml_engine.score_reconciliation_risk(master_reset, recon_model_local, recon_meta_local["feature_cols"])
+
         # appeal ranking (only for denied & not appealed)
         denied = master_reset[master_reset["is_denied"]].copy()
         not_appealed = denied[~denied["is_appealed"]].copy()
@@ -1333,6 +1343,7 @@ def page_agentic_rcm_agent():
                 "denial_probability": float(denial_probs[i]) if denial_probs is not None else float(np.nan),
                 "mismatch_probability": float(mismatch_probs[i]) if mismatch_probs is not None else float(np.nan),
                 "fraud_probability_improved": float(fraud_df.loc[i, "fraud_probability_improved"]) if fraud_df is not None else float(np.nan),
+                "reconciliation_risk_probability": float(recon_probs[i]) if recon_probs is not None else float(np.nan),
                 "coding_recommendation": coding_reco,
                 "nlp_coding_recommendation": nlp_coding_reco,
             }
@@ -1794,14 +1805,260 @@ def page_langgraph_chatbot():
 
 
 # ══════════════════════════════════════════════
+#  PAGE — PATIENT ACCESS & ELIGIBILITY
+# ══════════════════════════════════════════════
+def page_patient_access_eligibility():
+    st.markdown("# 🧾 Patient Access & Eligibility")
+    st.caption("Front-end automation for registration quality, eligibility checks, and patient support.")
+
+    df = master.copy()
+    # Patient insurance is kept from patients merge as `insurance_pat` in build_master.
+    if "insurance_pat" not in df.columns:
+        df["insurance_pat"] = df["insurance"]
+    df["insurance_pat"] = df["insurance_pat"].fillna("Unknown")
+    df["insurance_match"] = (df["insurance"].astype(str) == df["insurance_pat"].astype(str))
+    @st.cache_resource(show_spinner=False)
+    def cached_eligibility_model():
+        m, meta = ml_engine.load_eligibility_risk_model()
+        if m is None:
+            with st.spinner("🚀 Training eligibility risk model..."):
+                res = ml_engine.train_eligibility_risk_model(df)
+                return res["model"], res["meta"]
+        return m, meta
+
+    elig_model, elig_meta = cached_eligibility_model()
+    df["eligibility_risk"] = ml_engine.score_eligibility_risk(df, elig_model, elig_meta["feature_cols"])
+
+    match_rate = df["insurance_match"].mean() * 100
+    high_risk_count = int((df["eligibility_risk"] >= 0.65).sum())
+    est_avoidable = float(df[df["eligibility_risk"] >= 0.65]["claim_amount"].sum() * 0.15)
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Patients Covered", fmt_number(df["patient_id"].nunique()))
+    k2.metric("Insurance Match Rate", f"{match_rate:.1f}%")
+    k3.metric("High Eligibility Risk", fmt_number(high_risk_count))
+    k4.metric("Avoidable Leakage (Est.)", fmt_dollar(est_avoidable))
+
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        payer_match = df.groupby("insurance").agg(
+            total=("claim_id", "count"),
+            match=("insurance_match", "mean"),
+        ).reset_index()
+        payer_match["match"] = payer_match["match"] * 100
+        fig = go.Figure(go.Bar(
+            x=payer_match["insurance"],
+            y=payer_match["match"],
+            marker_color=COLORS["accent"],
+            text=payer_match["match"].round(1).astype(str) + "%",
+            textposition="outside"
+        ))
+        plotly_layout(fig, "Insurance Match Rate by Payer", 350)
+        fig.update_yaxes(title="Match %", range=[0, 100])
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        high_elig = df[df["eligibility_risk"] >= 0.65][
+            ["claim_id", "patient_id", "insurance", "insurance_pat", "claim_amount", "eligibility_risk"]
+        ].sort_values("eligibility_risk", ascending=False).head(15)
+        st.markdown("### ⚠️ High-Risk Eligibility Cases")
+        st.dataframe(high_elig, use_container_width=True, hide_index=True)
+        if isinstance(elig_meta, dict) and "metrics" in elig_meta:
+            st.caption(f"Model metrics: {elig_meta['metrics']}")
+
+    st.markdown("---")
+    st.markdown("### 💬 Patient Access Assistant (Demo)")
+    st.caption("Virtual assistant for common patient-access questions (prototype).")
+    chat_key = "pa_chat_messages"
+    if chat_key not in st.session_state:
+        st.session_state[chat_key] = [
+            {"role": "assistant", "content": "Hi! Ask about eligibility, registration docs, copay, or scheduling."}
+        ]
+    for m in st.session_state[chat_key]:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+
+    q = st.chat_input("Example: What documents are required for eligibility verification?")
+    if q:
+        st.session_state[chat_key].append({"role": "user", "content": q})
+        with st.chat_message("user"):
+            st.markdown(q)
+        ql = q.lower()
+        if "document" in ql or "eligibility" in ql:
+            ans = "Please collect insurance card, patient ID, DOB confirmation, and policy holder details before submission."
+        elif "copay" in ql or "payment" in ql:
+            ans = "Estimate copay after eligibility validation and share a pre-visit payment option."
+        elif "schedule" in ql or "appointment" in ql:
+            ans = "Appointments should be confirmed after eligibility pre-check to reduce front-desk denials."
+        else:
+            ans = "For this prototype, I can help with eligibility docs, registration checks, and scheduling flow."
+        st.session_state[chat_key].append({"role": "assistant", "content": ans})
+        with st.chat_message("assistant"):
+            st.markdown(ans)
+
+
+# ══════════════════════════════════════════════
+#  PAGE — PAYMENT RECONCILIATION
+# ══════════════════════════════════════════════
+def page_payment_reconciliation():
+    st.markdown("# 💳 Payment Reconciliation")
+    st.caption("Payment posting quality and reconciliation opportunities (ML-powered).")
+
+    df = master.copy()
+    df["posting_gap"] = (df["claim_amount"] - df["paid_amount"]).clip(lower=0)
+    @st.cache_resource(show_spinner=False)
+    def cached_recon_model():
+        model, meta = ml_engine.load_reconciliation_risk_model()
+        if model is None:
+            with st.spinner("🚀 Training reconciliation risk model..."):
+                res = ml_engine.train_reconciliation_risk_model(df)
+                return res["model"], res["meta"]
+        return model, meta
+
+    recon_model, recon_meta = cached_recon_model()
+    df["recon_risk_probability"] = ml_engine.score_reconciliation_risk(
+        df, recon_model, recon_meta["feature_cols"]
+    )
+    df["recon_status"] = np.where(df["recon_risk_probability"] >= 0.65, "Needs Review", "Auto-Matched")
+
+    auto_rate = (df["recon_status"] == "Auto-Matched").mean() * 100
+    review_count = int((df["recon_status"] == "Needs Review").sum())
+    review_amount = float(df[df["recon_status"] == "Needs Review"]["posting_gap"].sum())
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Auto-Matched Rate", f"{auto_rate:.1f}%")
+    k2.metric("Needs Review Claims", fmt_number(review_count))
+    k3.metric("Unreconciled Amount", fmt_dollar(review_amount))
+
+    st.markdown("---")
+    payer_recon = df.groupby("insurance").agg(
+        claims=("claim_id", "count"),
+        auto_match=("recon_status", lambda x: (x == "Auto-Matched").mean() * 100),
+        unreconciled=("posting_gap", "sum"),
+    ).reset_index()
+    c1, c2 = st.columns(2)
+    with c1:
+        fig = go.Figure(go.Bar(
+            x=payer_recon["insurance"],
+            y=payer_recon["auto_match"],
+            marker_color=COLORS["success"],
+            text=payer_recon["auto_match"].round(1).astype(str) + "%",
+            textposition="outside",
+        ))
+        plotly_layout(fig, "Auto-Match Rate by Payer", 330)
+        fig.update_yaxes(range=[0, 100], title="Auto-Match %")
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        top_review = df[df["recon_status"] == "Needs Review"][
+            ["claim_id", "insurance", "claim_amount", "paid_amount", "posting_gap", "recon_risk_probability"]
+        ].sort_values("recon_risk_probability", ascending=False).head(15)
+        st.dataframe(top_review, use_container_width=True, hide_index=True)
+        if isinstance(recon_meta, dict) and "metrics" in recon_meta:
+            st.caption(f"Model metrics: {recon_meta['metrics']}")
+
+
+# ══════════════════════════════════════════════
+#  PAGE — REVENUE FORECASTING
+# ══════════════════════════════════════════════
+def page_revenue_forecasting():
+    st.markdown("# 📈 Revenue Forecasting & What-If")
+    st.caption("Trend projection and denial-reduction scenario planning.")
+
+    merged = master.merge(events_tl[["claim_id", "CREATED"]], on="claim_id", how="left")
+    merged = merged.dropna(subset=["CREATED"]).copy()
+    merged["month"] = merged["CREATED"].dt.to_period("M").astype(str)
+    monthly = merged.groupby("month").agg(
+        billed=("claim_amount", "sum"),
+        collected=("paid_amount", "sum"),
+        denied=("is_denied", "mean"),
+    ).reset_index()
+    monthly["denied"] = monthly["denied"] * 100
+
+    forecast_res = ml_engine.fit_revenue_forecast_model(monthly, value_col="collected")
+    forecast_collected = float(forecast_res["next_forecast"])
+
+    k1, k2 = st.columns(2)
+    k1.metric("Next-Month Revenue Forecast", fmt_dollar(forecast_collected))
+    k2.metric("Avg Monthly Denial Rate", f"{monthly['denied'].mean():.1f}%")
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=monthly["month"], y=monthly["billed"], name="Billed", line=dict(color=COLORS["primary"])))
+    fig.add_trace(go.Scatter(x=monthly["month"], y=monthly["collected"], name="Collected", line=dict(color=COLORS["accent"])))
+    if len(monthly) == len(forecast_res["fitted"]):
+        fig.add_trace(go.Scatter(
+            x=monthly["month"],
+            y=forecast_res["fitted"],
+            name="Forecast Trend (Model)",
+            line=dict(color=COLORS["warning"], dash="dash"),
+        ))
+    plotly_layout(fig, "Monthly Revenue Trend", 340)
+    st.plotly_chart(fig, use_container_width=True)
+    if "metrics" in forecast_res:
+        st.caption(f"Forecast model metrics: {forecast_res['metrics']}")
+
+    st.markdown("### What-If Analysis")
+    reduction = st.slider("If 'Missing docs' denials reduce by (%)", 0, 80, 50)
+    missing_docs_amt = master[master["denial_reason"] == "Missing docs"]["claim_amount"].sum()
+    uplift = missing_docs_amt * (reduction / 100.0) * 0.5
+    st.success(f"Estimated additional recoverable revenue: **{fmt_dollar(uplift)}**")
+
+
+# ══════════════════════════════════════════════
+#  PAGE — MONITORING & ALERTS
+# ══════════════════════════════════════════════
+def page_monitoring_alerts():
+    st.markdown("# 🖥️ Monitoring & Alerts")
+    st.caption("Continuous KPI watchlist for denial, fraud, and payment risk (near real-time simulation).")
+
+    denial_rate = master["is_denied"].mean() * 100
+    fraud_high = (master["fraud_score"] > 0.8).mean() * 100
+    recon_backlog = ((master["claim_amount"] - master["paid_amount"]).clip(lower=0) > 50).sum()
+
+    alerts = []
+    if denial_rate > 8:
+        alerts.append(("Denial rate above threshold", "danger"))
+    if fraud_high > 3:
+        alerts.append(("High fraud-risk pool increased", "warning"))
+    if recon_backlog > 5000:
+        alerts.append(("Payment reconciliation backlog high", "warning"))
+    if not alerts:
+        alerts.append(("All core KPIs within expected bands", "success"))
+
+    for txt, lvl in alerts:
+        if lvl == "danger":
+            st.error(f"🚨 {txt}")
+        elif lvl == "warning":
+            st.warning(f"⚠️ {txt}")
+        else:
+            st.success(f"✅ {txt}")
+
+    st.markdown("---")
+    monitor_df = pd.DataFrame({
+        "Metric": ["Denial Rate %", "Fraud High-Risk %", "Reconciliation Backlog"],
+        "Current": [round(denial_rate, 2), round(fraud_high, 2), int(recon_backlog)],
+        "Threshold": [8.0, 3.0, 5000],
+        "Status": [
+            "ALERT" if denial_rate > 8 else "OK",
+            "ALERT" if fraud_high > 3 else "OK",
+            "ALERT" if recon_backlog > 5000 else "OK",
+        ]
+    })
+    st.dataframe(monitor_df, use_container_width=True, hide_index=True)
+
+# ══════════════════════════════════════════════
 #  Page Router
 # ══════════════════════════════════════════════
 PAGES = {
     "🏠 Executive Summary": page_executive_summary,
+    "🧾 Patient Access & Eligibility": page_patient_access_eligibility,
     "🚫 Denial Intelligence": page_denial_intelligence,
     "📋 Appeals Analytics": page_appeals_analytics,
     "🔍 Fraud Detection": page_fraud_detection,
     "🧹 Smart Scrubbing": page_scrubbing,
+    "💳 Payment Reconciliation": page_payment_reconciliation,
+    "📈 Revenue Forecasting": page_revenue_forecasting,
+    "🖥️ Monitoring & Alerts": page_monitoring_alerts,
     "⏱️ AR Aging & Lifecycle": page_ar_aging,
     "🧠 AI Denial Predictor": page_denial_predictor,
     "🤖 Agentic RCM Agent": page_agentic_rcm_agent,

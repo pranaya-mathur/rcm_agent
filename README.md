@@ -126,6 +126,11 @@ Run:
 python3 backend_api.py
 ```
 
+API endpoints:
+- `GET /api/health`
+- `GET /api/summary`
+- `GET /api/agent/claim/<claim_id>`
+
 In another terminal:
 
 ```bash
