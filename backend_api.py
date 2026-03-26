@@ -7,6 +7,8 @@ Run:
 Endpoints:
   GET /api/health
   GET /api/summary
+  GET /api/agent/claim/<claim_id>
+  POST /api/score-claim
 """
 
 from __future__ import annotations
@@ -135,6 +137,206 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return f
     except Exception:
         return default
+
+
+def _build_runtime_claim_row(payload: Dict[str, Any], master: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Build a model-compatible claim row by starting from an existing template row.
+    This allows real-time payload scoring while preserving required columns.
+    """
+    template = master.iloc[0].to_dict() if len(master) > 0 else {}
+    claim = dict(template)
+
+    # Keep defaults from historical template, but allow explicit runtime overrides.
+    claim["claim_id"] = int(payload.get("claim_id", 99_999_999))
+    claim["encounter_id"] = int(payload.get("encounter_id", claim.get("encounter_id", 99_999_999)))
+    claim["patient_id"] = int(payload.get("patient_id", claim.get("patient_id", 99_999_999)))
+    claim["insurance"] = str(payload.get("insurance", claim.get("insurance", "Unknown")))
+    claim["visit_type"] = str(payload.get("visit_type", claim.get("visit_type", "OP")))
+    claim["icd_code"] = str(payload.get("icd_code", claim.get("icd_code", "Unknown")))
+    claim["gender"] = str(payload.get("gender", claim.get("gender", "U")))
+    claim["age"] = int(payload.get("age", claim.get("age", 40)))
+    claim["claim_amount"] = _safe_float(payload.get("claim_amount", claim.get("claim_amount", 0.0)), 0.0)
+    claim["paid_amount"] = _safe_float(payload.get("paid_amount", claim.get("paid_amount", 0.0)), 0.0)
+    claim["fraud_score"] = _safe_float(payload.get("fraud_score", claim.get("fraud_score", 0.0)), 0.0)
+    claim["denial_reason"] = str(payload.get("denial_reason", claim.get("denial_reason", "None")))
+
+    claim["is_denied"] = bool(payload.get("is_denied", claim.get("is_denied", False)))
+    claim["is_appealed"] = bool(payload.get("is_appealed", claim.get("is_appealed", False)))
+    claim["appeal_success"] = bool(payload.get("appeal_success", claim.get("appeal_success", False)))
+    claim["is_clean_claim"] = bool(payload.get("is_clean_claim", claim.get("is_clean_claim", True)))
+    claim["cpt_icd_mismatch"] = bool(payload.get("cpt_icd_mismatch", claim.get("cpt_icd_mismatch", False)))
+    claim["high_amount_flag"] = bool(payload.get("high_amount_flag", claim.get("high_amount_flag", claim["claim_amount"] > 1500)))
+    claim["strict_insurance_flag"] = bool(payload.get("strict_insurance_flag", claim.get("strict_insurance_flag", False)))
+
+    return claim
+
+
+def _build_runtime_cpt_summary_row(
+    payload: Dict[str, Any],
+    claim_id: int,
+    claim_amount: float,
+    cpt_summary: pd.DataFrame,
+) -> Dict[str, Any]:
+    """
+    Build a cpt_summary-like row for a runtime claim payload.
+    """
+    template = cpt_summary.iloc[0].to_dict() if len(cpt_summary) > 0 else {}
+    row = dict(template)
+    row["claim_id"] = int(claim_id)
+
+    cpt_codes_raw = payload.get("cpt_codes", [])
+    cpt_codes = [str(x).strip() for x in cpt_codes_raw if str(x).strip()]
+    num_cpt_codes = int(payload.get("num_cpt_codes", len(cpt_codes) if len(cpt_codes) > 0 else 1))
+    total_cpt_amount = _safe_float(payload.get("total_cpt_amount", claim_amount), claim_amount)
+
+    row["num_cpt_codes"] = num_cpt_codes
+    row["total_cpt_amount"] = total_cpt_amount
+    row["cpt_codes_list"] = ",".join(cpt_codes)
+
+    # Populate known dynamic cpt_<code>_count columns if present in current summary schema.
+    for code in cpt_codes:
+        col = f"cpt_{code}_count"
+        if col in cpt_summary.columns:
+            row[col] = row.get(col, 0) + 1
+
+    return row
+
+
+def build_realtime_agent_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Score a runtime claim payload (without requiring it in CSV data) and run coordinator agent.
+
+    Expected payload keys (minimum practical):
+      claim_id, insurance, visit_type, icd_code, gender, age, claim_amount
+    Optional:
+      paid_amount, fraud_score, denial_reason, is_denied, is_appealed, appeal_success,
+      cpt_codes (list[str]), total_cpt_amount, num_cpt_codes, clinical_notes
+    """
+    master = build_master().reset_index(drop=True).copy()
+    cpt_summary = get_cpt_summary().reset_index(drop=True).copy()
+    raw = load_all()
+
+    if len(master) == 0:
+        return {"ok": False, "error": "Master dataset is empty. Cannot score runtime claim."}
+
+    runtime_claim = _build_runtime_claim_row(payload, master)
+    runtime_cpt = _build_runtime_cpt_summary_row(
+        payload=payload,
+        claim_id=int(runtime_claim["claim_id"]),
+        claim_amount=_safe_float(runtime_claim["claim_amount"], 0.0),
+        cpt_summary=cpt_summary,
+    )
+
+    # Append runtime row to existing batch so feature pipelines stay unchanged.
+    master_ext = pd.concat([master, pd.DataFrame([runtime_claim])], ignore_index=True)
+    cpt_ext = pd.concat([cpt_summary, pd.DataFrame([runtime_cpt])], ignore_index=True)
+    sel_idx = len(master_ext) - 1
+
+    denial_model, denial_meta = ml_engine.load_model()
+    if denial_model is None:
+        tmp = ml_engine.train_model(master, cpt_summary)
+        denial_model = tmp["model"]
+        denial_meta = {"feature_cols": tmp["feature_cols"]}
+    denial_pred = ml_engine.predict_single_claim(runtime_claim, denial_model, denial_meta["feature_cols"])
+
+    mismatch_model, mismatch_meta = ml_engine.load_mismatch_model()
+    if mismatch_model is None:
+        tmp = ml_engine.train_mismatch_model(master, cpt_summary)
+        mismatch_model, mismatch_meta = tmp["model"], tmp["meta"]
+    mismatch_probs = ml_engine.score_all_mismatch(master_ext, cpt_ext, mismatch_model, mismatch_meta["feature_cols"])
+
+    appeals_success_model, appeals_success_meta = ml_engine.load_appeals_success_model()
+    if appeals_success_model is None:
+        tmp = ml_engine.train_appeals_success_model(master, cpt_summary)
+        appeals_success_model, appeals_success_meta = tmp["model"], tmp["meta"]
+    appeals_recovery_model, appeals_recovery_meta = ml_engine.load_appeals_recovery_model()
+    if appeals_recovery_model is None:
+        tmp = ml_engine.train_appeals_recovery_model(master, cpt_summary)
+        appeals_recovery_model, appeals_recovery_meta = tmp["model"], tmp["meta"]
+
+    fraud_prob_model, fraud_prob_meta = ml_engine.load_fraud_probability_model()
+    if fraud_prob_model is None:
+        tmp = ml_engine.train_fraud_probability_model(master, cpt_summary)
+        fraud_prob_model, fraud_prob_meta = tmp["model"], tmp["meta"]
+    fraud_anomaly_model, fraud_anomaly_meta = ml_engine.load_fraud_anomaly_model()
+    if fraud_anomaly_model is None:
+        tmp = ml_engine.train_fraud_anomaly_model(master)
+        fraud_anomaly_model, fraud_anomaly_meta = tmp["model"], tmp["meta"]
+    fraud_df = ml_engine.score_fraud_enhanced(
+        master_ext,
+        cpt_ext,
+        fraud_prob_model,
+        fraud_prob_meta["feature_cols"],
+        fraud_anomaly_model,
+        fraud_anomaly_meta,
+        alpha=0.6,
+    )
+
+    recon_model, recon_meta = ml_engine.load_reconciliation_risk_model()
+    if recon_model is None:
+        tmp = ml_engine.train_reconciliation_risk_model(master)
+        recon_model, recon_meta = tmp["model"], tmp["meta"]
+    recon_probs = ml_engine.score_reconciliation_risk(master_ext, recon_model, recon_meta["feature_cols"])
+
+    # Appeals inference for this one claim by passing single-row frame.
+    runtime_df = pd.DataFrame([runtime_claim])
+    runtime_cpt_df = pd.DataFrame([runtime_cpt])
+    ranked = ml_engine.predict_appeals_ranked_candidates(
+        runtime_df,
+        runtime_cpt_df,
+        appeals_success_model,
+        appeals_success_meta["feature_cols"],
+        appeals_recovery_model,
+        appeals_recovery_meta["feature_cols"],
+    )
+    p_appeal_success = _safe_float(ranked.iloc[0]["p_appeal_success"], 0.0) if len(ranked) > 0 else 0.0
+    expected_recovery = _safe_float(ranked.iloc[0]["expected_recovery"], 0.0) if len(ranked) > 0 else 0.0
+
+    coding_knowledge = build_cpt_icd_knowledge(raw["cpt_lines"], raw["icd"], raw["claims"])
+    cpt_codes = [str(x).strip() for x in payload.get("cpt_codes", []) if str(x).strip()]
+    coding_reco = build_coding_recommendation(
+        runtime_claim,
+        cpt_codes,
+        coding_knowledge,
+        _safe_float(mismatch_probs[sel_idx], 0.0),
+        min_support=20,
+    )
+
+    nlp_model_bundle = train_notes_to_icd_model(raw["encounters"], raw["claims"], raw["icd"], min_samples=50)
+    clinical_notes = str(payload.get("clinical_notes", "") or "")
+    note_pred = predict_icd_from_notes_batch([clinical_notes], nlp_model_bundle, top_k=3)[0]
+    nlp_coding_reco = build_nlp_coding_recommendation(
+        runtime_claim,
+        note_pred,
+        _safe_float(mismatch_probs[sel_idx], 0.0),
+    )
+
+    predictions = {
+        "denial_probability": _safe_float(denial_pred.get("denial_probability", 0.0), 0.0),
+        "mismatch_probability": _safe_float(mismatch_probs[sel_idx], 0.0),
+        "fraud_probability_improved": _safe_float(fraud_df.loc[sel_idx, "fraud_probability_improved"], 0.0),
+        "reconciliation_risk_probability": _safe_float(recon_probs[sel_idx], 0.0),
+        "coding_recommendation": coding_reco,
+        "nlp_coding_recommendation": nlp_coding_reco,
+        "p_appeal_success": p_appeal_success,
+        "expected_recovery": expected_recovery,
+    }
+
+    agent = CoordinatorAgent()
+    agent_out = agent.run(claim=runtime_claim, predictions=predictions)
+    steps = [{"agent": s.agent, "step": s.step, "summary": s.summary} for s in agent_out.steps]
+    return {
+        "ok": True,
+        "mode": "runtime_payload_inference",
+        "claim_id": int(runtime_claim["claim_id"]),
+        "recommendation": agent_out.recommendation,
+        "action_items": agent_out.action_items,
+        "appeal_letter": agent_out.appeal_letter,
+        "metrics": agent_out.metrics,
+        "predictions": predictions,
+        "steps": steps,
+    }
 
 
 def build_agent_claim_payload(claim_id: int) -> Dict[str, Any]:
@@ -271,7 +473,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -305,6 +507,30 @@ class Handler(BaseHTTPRequestHandler):
                 self._set_headers(500)
                 self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
             return
+
+        self._set_headers(404)
+        self.wfile.write(json.dumps({"ok": False, "error": "Not found"}).encode("utf-8"))
+
+    def do_POST(self):
+        if self.path == "/api/score-claim":
+            try:
+                content_len = int(self.headers.get("Content-Length", "0"))
+                raw_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
+                payload = json.loads(raw_body.decode("utf-8"))
+                if not isinstance(payload, dict):
+                    self._set_headers(400)
+                    self.wfile.write(json.dumps({"ok": False, "error": "JSON payload must be an object"}).encode("utf-8"))
+                    return
+
+                result = build_realtime_agent_payload(payload)
+                status = 200 if result.get("ok", False) else 400
+                self._set_headers(status)
+                self.wfile.write(json.dumps(result).encode("utf-8"))
+                return
+            except Exception as e:
+                self._set_headers(500)
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
+                return
 
         self._set_headers(404)
         self.wfile.write(json.dumps({"ok": False, "error": "Not found"}).encode("utf-8"))

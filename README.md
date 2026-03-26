@@ -166,8 +166,40 @@ From `backend_api.py`:
 - `GET /api/health`
 - `GET /api/summary`
 - `GET /api/agent/claim/<claim_id>`
+- `POST /api/score-claim`
 
 Base URL: `http://localhost:8001`
+
+### Realtime single-claim inference (no CSV append needed)
+
+Use `POST /api/score-claim` to score a new incoming claim payload and run `CoordinatorAgent`.
+
+Example:
+
+```bash
+curl -X POST "http://localhost:8001/api/score-claim" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "claim_id": 990001,
+    "encounter_id": 880001,
+    "patient_id": 770001,
+    "insurance": "Aetna",
+    "visit_type": "OP",
+    "icd_code": "E11.9",
+    "gender": "F",
+    "age": 54,
+    "claim_amount": 1850,
+    "paid_amount": 0,
+    "fraud_score": 0.32,
+    "denial_reason": "Auth required",
+    "is_denied": true,
+    "is_appealed": false,
+    "appeal_success": false,
+    "cpt_codes": ["99213", "80053"],
+    "total_cpt_amount": 1750,
+    "clinical_notes": "Diabetes follow-up, lab review, medication adjustment."
+  }'
+```
 
 ---
 
