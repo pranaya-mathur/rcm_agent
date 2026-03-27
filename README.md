@@ -103,7 +103,7 @@ flowchart TD
 
 ## Dashboard Pages (Streamlit)
 
-- Executive Summary
+- RCM Command Center
 - Patient Access & Eligibility
 - Denial Intelligence
 - Appeals Analytics
@@ -116,6 +116,13 @@ flowchart TD
 - Agentic RCM Agent
 - LangGraph Chatbot
 - AI Denial Predictor
+
+Sidebar is grouped by operational stage for demo flow:
+- Command
+- Front-End
+- Mid-Cycle
+- Back-End
+- Intelligence & Ops
 
 ---
 

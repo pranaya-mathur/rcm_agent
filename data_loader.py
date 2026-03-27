@@ -50,7 +50,7 @@ def build_master():
     denials = dfs["denials"].copy()
     denials["is_denied"] = True
     master = master.merge(denials, on="claim_id", how="left")
-    master["is_denied"] = master["is_denied"].fillna(False)
+    master["is_denied"] = master["is_denied"].astype("boolean").fillna(False).astype(bool)
     master["denial_reason"] = master["denial_reason"].fillna("None")
 
     # appeals — flag
@@ -61,8 +61,8 @@ def build_master():
         appeals[["claim_id", "is_appealed", "appeal_success"]],
         on="claim_id", how="left"
     )
-    master["is_appealed"] = master["is_appealed"].fillna(False)
-    master["appeal_success"] = master["appeal_success"].fillna(False)
+    master["is_appealed"] = master["is_appealed"].astype("boolean").fillna(False).astype(bool)
+    master["appeal_success"] = master["appeal_success"].astype("boolean").fillna(False).astype(bool)
 
     # fraud
     master = master.merge(dfs["fraud"], on="claim_id", how="left")
@@ -72,7 +72,7 @@ def build_master():
     # Ensure scrubbing booleans are always present for downstream feature engineering.
     for col in ["cpt_icd_mismatch", "high_amount_flag", "strict_insurance_flag"]:
         if col in master.columns:
-            master[col] = master[col].fillna(False)
+            master[col] = master[col].astype("boolean").fillna(False).astype(bool)
 
     # encounters (to get visit_type, patient_id)
     master = master.merge(dfs["encounters"], on="encounter_id", how="left")

@@ -229,8 +229,12 @@ def build_realtime_agent_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     # Append runtime row to existing batch so feature pipelines stay unchanged.
-    master_ext = pd.concat([master, pd.DataFrame([runtime_claim])], ignore_index=True)
-    cpt_ext = pd.concat([cpt_summary, pd.DataFrame([runtime_cpt])], ignore_index=True)
+    runtime_claim_df = pd.DataFrame([runtime_claim]).reindex(columns=master.columns)
+    runtime_cpt_df_full = pd.DataFrame([runtime_cpt]).reindex(columns=cpt_summary.columns)
+    master_ext = master.copy()
+    master_ext.loc[len(master_ext)] = runtime_claim_df.iloc[0]
+    cpt_ext = cpt_summary.copy()
+    cpt_ext.loc[len(cpt_ext)] = runtime_cpt_df_full.iloc[0]
     sel_idx = len(master_ext) - 1
 
     denial_model, denial_meta = ml_engine.load_model()
@@ -280,8 +284,8 @@ def build_realtime_agent_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     recon_probs = ml_engine.score_reconciliation_risk(master_ext, recon_model, recon_meta["feature_cols"])
 
     # Appeals inference for this one claim by passing single-row frame.
-    runtime_df = pd.DataFrame([runtime_claim])
-    runtime_cpt_df = pd.DataFrame([runtime_cpt])
+    runtime_df = runtime_claim_df.copy()
+    runtime_cpt_df = runtime_cpt_df_full.copy()
     ranked = ml_engine.predict_appeals_ranked_candidates(
         runtime_df,
         runtime_cpt_df,
