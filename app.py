@@ -31,6 +31,7 @@ from clinical_nlp_agent import (
     predict_icd_from_notes_batch,
     build_nlp_coding_recommendation,
 )
+from backend_api import build_realtime_agent_payload
 
 # ──────────────────────────────────────────────
 #  Page config & CSS
@@ -1869,12 +1870,123 @@ def page_patient_access_eligibility():
 
     st.markdown("---")
     st.markdown("### 💬 Patient Access Assistant (Demo)")
-    st.caption("Virtual assistant for common patient-access questions (prototype).")
+    st.caption("Virtual assistant for eligibility, registration, and patient-access triage (data-aware prototype).")
     chat_key = "pa_chat_messages"
     if chat_key not in st.session_state:
         st.session_state[chat_key] = [
-            {"role": "assistant", "content": "Hi! Ask about eligibility, registration docs, copay, or scheduling."}
+            {
+                "role": "assistant",
+                "content": (
+                    "Hi! I can help with eligibility checks, required registration docs, copay guidance, "
+                    "and patient/claim risk lookups.\n\n"
+                    "Try: `show high risk cases`, `patient 12345`, `claim 67890`, or `what is match rate?`"
+                ),
+            }
         ]
+
+    top_risk_df = df.sort_values("eligibility_risk", ascending=False).copy()
+
+    def _extract_first_int(text: str):
+        for tok in text.replace(",", " ").split():
+            cleaned = "".join(ch for ch in tok if ch.isdigit())
+            if cleaned:
+                try:
+                    return int(cleaned)
+                except Exception:
+                    pass
+        return None
+
+    def _patient_access_reply(user_text: str) -> str:
+        ql = user_text.lower().strip()
+        entity_id = _extract_first_int(user_text)
+
+        if any(k in ql for k in ["kpi", "summary", "match rate", "dashboard", "overall"]):
+            return (
+                f"Current patient-access snapshot:\n"
+                f"- Insurance match rate: **{match_rate:.1f}%**\n"
+                f"- High eligibility risk cases: **{high_risk_count}**\n"
+                f"- Avoidable leakage estimate: **{fmt_dollar(est_avoidable)}**\n\n"
+                f"Focus first on high-risk claims where `insurance != insurance_pat` or auth is likely missing."
+            )
+
+        if ("patient" in ql or "pt" in ql) and entity_id is not None:
+            p = top_risk_df[top_risk_df["patient_id"].astype(int) == int(entity_id)]
+            if len(p) == 0:
+                return f"I could not find patient `{entity_id}` in the current dataset."
+            p_top = p.sort_values("eligibility_risk", ascending=False).iloc[0]
+            level = "HIGH" if p_top["eligibility_risk"] >= 0.65 else ("MEDIUM" if p_top["eligibility_risk"] >= 0.4 else "LOW")
+            return (
+                f"Patient `{entity_id}` latest risk snapshot:\n"
+                f"- Claim ID: **{int(p_top['claim_id'])}**\n"
+                f"- Eligibility risk: **{float(p_top['eligibility_risk'])*100:.1f}% ({level})**\n"
+                f"- Insurance (claim vs patient): **{p_top['insurance']} vs {p_top['insurance_pat']}**\n"
+                f"- Claim amount: **{fmt_dollar(float(p_top['claim_amount']))}**\n\n"
+                f"Recommended next step: verify insurance details + authorization requirement before submission."
+            )
+
+        if ("claim" in ql or "clm" in ql) and entity_id is not None:
+            c = top_risk_df[top_risk_df["claim_id"].astype(int) == int(entity_id)]
+            if len(c) == 0:
+                return f"I could not find claim `{entity_id}` in the current dataset."
+            r = c.iloc[0]
+            level = "HIGH" if r["eligibility_risk"] >= 0.65 else ("MEDIUM" if r["eligibility_risk"] >= 0.4 else "LOW")
+            return (
+                f"Claim `{entity_id}` eligibility triage:\n"
+                f"- Risk: **{float(r['eligibility_risk'])*100:.1f}% ({level})**\n"
+                f"- Patient ID: **{int(r['patient_id'])}**\n"
+                f"- Insurance match: **{'Yes' if bool(r['insurance_match']) else 'No'}**\n"
+                f"- Amount: **{fmt_dollar(float(r['claim_amount']))}**\n\n"
+                f"Action: run registration quality check, then confirm policy + auth before final submission."
+            )
+
+        if any(k in ql for k in ["high risk", "top risk", "priority", "which cases"]):
+            top5 = top_risk_df.head(5)[["claim_id", "patient_id", "eligibility_risk", "insurance", "insurance_pat"]]
+            lines = [
+                f"- Claim {int(r.claim_id)} | Patient {int(r.patient_id)} | Risk {float(r.eligibility_risk)*100:.1f}% | {r.insurance} vs {r.insurance_pat}"
+                for r in top5.itertuples(index=False)
+            ]
+            return "Top 5 eligibility-priority cases:\n" + "\n".join(lines)
+
+        if any(k in ql for k in ["document", "docs", "eligibility", "registration"]):
+            return (
+                "Eligibility and registration checklist:\n"
+                "- Insurance card (front/back)\n"
+                "- Patient government ID\n"
+                "- DOB + policy holder verification\n"
+                "- Active coverage + plan effective dates\n"
+                "- Referral/Auth requirement (if payer requires)\n\n"
+                "Best practice: complete this before appointment confirmation to reduce front-desk denials."
+            )
+
+        if any(k in ql for k in ["copay", "co-pay", "payment", "estimate"]):
+            return (
+                "Copay flow:\n"
+                "- Verify eligibility first\n"
+                "- Estimate patient responsibility by plan\n"
+                "- Share pre-visit payment options\n"
+                "- Capture payment confirmation notes\n\n"
+                "This reduces post-visit AR and improves collection quality."
+            )
+
+        if any(k in ql for k in ["schedule", "appointment", "booking"]):
+            return (
+                "Scheduling recommendation:\n"
+                "1) Quick registration quality check\n"
+                "2) Eligibility and auth pre-check\n"
+                "3) Confirm appointment\n"
+                "4) Send patient prep checklist\n\n"
+                "This sequence minimizes same-day denial risk."
+            )
+
+        return (
+            "I can help with:\n"
+            "- `show high risk cases`\n"
+            "- `patient <id>` or `claim <id>` lookups\n"
+            "- eligibility docs checklist\n"
+            "- copay/payment and scheduling workflow\n"
+            "- dashboard KPI summary"
+        )
+
     for m in st.session_state[chat_key]:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
@@ -1884,18 +1996,105 @@ def page_patient_access_eligibility():
         st.session_state[chat_key].append({"role": "user", "content": q})
         with st.chat_message("user"):
             st.markdown(q)
-        ql = q.lower()
-        if "document" in ql or "eligibility" in ql:
-            ans = "Please collect insurance card, patient ID, DOB confirmation, and policy holder details before submission."
-        elif "copay" in ql or "payment" in ql:
-            ans = "Estimate copay after eligibility validation and share a pre-visit payment option."
-        elif "schedule" in ql or "appointment" in ql:
-            ans = "Appointments should be confirmed after eligibility pre-check to reduce front-desk denials."
-        else:
-            ans = "For this prototype, I can help with eligibility docs, registration checks, and scheduling flow."
+        ans = _patient_access_reply(q)
         st.session_state[chat_key].append({"role": "assistant", "content": ans})
         with st.chat_message("assistant"):
             st.markdown(ans)
+
+    st.markdown("---")
+    st.markdown("### ⚡ Realtime Claim Scoring (Patient Access + Agent)")
+    st.caption("Score a new incoming claim payload directly and view CoordinatorAgent output.")
+
+    with st.form("patient_access_realtime_score_form"):
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            claim_id_in = int(st.number_input("Claim ID", min_value=1, value=990001, step=1))
+            patient_id_in = int(st.number_input("Patient ID", min_value=1, value=770001, step=1))
+            encounter_id_in = int(st.number_input("Encounter ID", min_value=1, value=880001, step=1))
+            age_in = int(st.number_input("Age", min_value=0, max_value=120, value=54, step=1))
+        with f2:
+            insurance_in = st.selectbox("Insurance", sorted(df["insurance"].astype(str).dropna().unique().tolist()))
+            visit_type_in = st.selectbox("Visit Type", sorted(df["visit_type"].astype(str).dropna().unique().tolist()))
+            gender_in = st.selectbox("Gender", ["F", "M", "U"])
+            icd_in = st.text_input("ICD Code", value="E11.9")
+        with f3:
+            claim_amt_in = float(st.number_input("Claim Amount", min_value=0.0, value=1850.0, step=50.0))
+            paid_amt_in = float(st.number_input("Paid Amount", min_value=0.0, value=0.0, step=50.0))
+            fraud_score_in = float(st.slider("Fraud Score (input signal)", min_value=0.0, max_value=1.0, value=0.32, step=0.01))
+            denial_reason_in = st.selectbox(
+                "Denial Reason",
+                sorted(df["denial_reason"].fillna("None").astype(str).unique().tolist()),
+            )
+
+        cpt_codes_in = st.text_input("CPT Codes (comma-separated)", value="99213,80053")
+        clinical_notes_in = st.text_area(
+            "Clinical Notes",
+            value="Diabetes follow-up, lab review, medication adjustment.",
+            height=90,
+        )
+
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            is_denied_in = st.checkbox("Is Denied", value=True)
+        with b2:
+            is_appealed_in = st.checkbox("Is Appealed", value=False)
+        with b3:
+            appeal_success_in = st.checkbox("Appeal Success", value=False)
+
+        run_rt = st.form_submit_button("Run Realtime Agent Score", type="primary")
+
+    if run_rt:
+        payload = {
+            "claim_id": claim_id_in,
+            "encounter_id": encounter_id_in,
+            "patient_id": patient_id_in,
+            "insurance": insurance_in,
+            "visit_type": visit_type_in,
+            "icd_code": icd_in.strip(),
+            "gender": gender_in,
+            "age": age_in,
+            "claim_amount": claim_amt_in,
+            "paid_amount": paid_amt_in,
+            "fraud_score": fraud_score_in,
+            "denial_reason": denial_reason_in,
+            "is_denied": is_denied_in,
+            "is_appealed": is_appealed_in,
+            "appeal_success": appeal_success_in,
+            "cpt_codes": [x.strip() for x in cpt_codes_in.split(",") if x.strip()],
+            "total_cpt_amount": claim_amt_in,
+            "clinical_notes": clinical_notes_in,
+        }
+        with st.spinner("Scoring runtime claim and running coordinator agent..."):
+            try:
+                rt_res = build_realtime_agent_payload(payload)
+            except Exception as e:
+                rt_res = {"ok": False, "error": str(e)}
+
+        if not rt_res.get("ok", False):
+            st.error(f"Realtime scoring failed: {rt_res.get('error', 'Unknown error')}")
+        else:
+            st.success(f"Realtime claim `{rt_res.get('claim_id')}` scored successfully.")
+            preds = rt_res.get("predictions", {})
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Denial Probability", f"{float(preds.get('denial_probability', 0))*100:.1f}%")
+            m2.metric("Mismatch Probability", f"{float(preds.get('mismatch_probability', 0))*100:.1f}%")
+            m3.metric("Fraud (Improved)", f"{float(preds.get('fraud_probability_improved', 0))*100:.1f}%")
+            m4.metric("Reconciliation Risk", f"{float(preds.get('reconciliation_risk_probability', 0))*100:.1f}%")
+
+            st.markdown("#### Coordinator Recommendation")
+            st.info(rt_res.get("recommendation", "No recommendation generated."))
+
+            a1, a2 = st.columns([1.2, 1])
+            with a1:
+                st.markdown("#### Action Items")
+                for item in rt_res.get("action_items", []):
+                    st.markdown(f"- {item}")
+            with a2:
+                st.markdown("#### Key Metrics")
+                st.json(rt_res.get("metrics", {}))
+
+            with st.expander("Agent Steps", expanded=False):
+                st.json(rt_res.get("steps", []))
 
 
 # ══════════════════════════════════════════════
