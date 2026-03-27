@@ -101,6 +101,18 @@ def fmt_number(val):
         return f"{val / 1_000:.1f}K"
     return f"{val:,}"
 
+
+def render_page_header(title: str, subtitle: str):
+    st.markdown(
+        f"""
+        <div class="rcm-header">
+            <div class="rcm-header-title">{title}</div>
+            <div class="rcm-header-subtitle">{subtitle}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 # ──────────────────────────────────────────────
 #  Load data
 # ──────────────────────────────────────────────
@@ -132,25 +144,15 @@ with st.sidebar:
 
     st.markdown("---")
 
-    page = st.radio(
-        "📊 Navigation",
-        [
-            "🏠 Executive Summary",
-            "🧾 Patient Access & Eligibility",
-            "🚫 Denial Intelligence",
-            "📋 Appeals Analytics",
-            "🔍 Fraud Detection",
-            "🧹 Smart Scrubbing",
-            "💳 Payment Reconciliation",
-            "📈 Revenue Forecasting",
-            "🖥️ Monitoring & Alerts",
-            "⏱️ AR Aging & Lifecycle",
-            "🤖 Agentic RCM Agent",
-            "💬 LangGraph Chatbot",
-            "🧠 AI Denial Predictor",
-        ],
-        label_visibility="collapsed",
-    )
+    nav_groups = {
+        "Command": ["🏥 RCM Command Center"],
+        "Front-End": ["🧾 Patient Access & Eligibility"],
+        "Mid-Cycle": ["🧹 Smart Scrubbing", "🧠 AI Denial Predictor"],
+        "Back-End": ["🚫 Denial Intelligence", "📋 Appeals Analytics", "💳 Payment Reconciliation", "⏱️ AR Aging & Lifecycle"],
+        "Intelligence & Ops": ["🔍 Fraud Detection", "📈 Revenue Forecasting", "🖥️ Monitoring & Alerts", "🤖 Agentic RCM Agent", "💬 LangGraph Chatbot"],
+    }
+    selected_group = st.radio("🏷️ RCM Stage", list(nav_groups.keys()), label_visibility="collapsed")
+    page = st.selectbox("📊 Module", nav_groups[selected_group], label_visibility="collapsed")
 
     st.markdown("---")
     st.markdown(f"""
@@ -168,8 +170,10 @@ with st.sidebar:
 #  PAGE 1 — EXECUTIVE SUMMARY
 # ══════════════════════════════════════════════
 def page_executive_summary():
-    st.markdown("# 🏠 Executive Summary")
-    st.caption("End-to-end Revenue Cycle performance at a glance")
+    render_page_header(
+        "Healthcare Revenue Cycle Command Center",
+        "Enterprise RCM operations view across Patient Access, Mid-Cycle Integrity, and Back-End Revenue Protection.",
+    )
 
     # ── KPI row ──
     total_billed = master["claim_amount"].sum()
@@ -194,6 +198,94 @@ def page_executive_summary():
     k7.metric("Clean Claim Rate", f"{clean_claim_rate:.1f}%", delta="Target 95%+")
     k8.metric("Fraud Flagged", f"{fraud_rate:.1f}%", delta=f"{master['fraud_flag'].sum():,} claims", delta_color="inverse")
     k9.metric("Appeals Success", f"{master[master['is_appealed']]['appeal_success'].mean()*100:.0f}%")
+
+    st.markdown("---")
+
+    st.markdown("### 🎯 PDF Impact Benchmark Tracker")
+    mismatch_rate = master["cpt_icd_mismatch"].fillna(False).mean() * 100 if "cpt_icd_mismatch" in master.columns else 0.0
+    posting_gap = (master["claim_amount"] - master["paid_amount"]).clip(lower=0)
+    recon_backlog_rate = (posting_gap > 50).mean() * 100
+    baseline_denial = 12.0
+    baseline_mismatch = 30.0
+    baseline_recon = 28.0
+
+    def _improvement_pct(baseline: float, current: float) -> float:
+        if baseline <= 0:
+            return 0.0
+        return max(-100.0, (baseline - current) / baseline * 100.0)
+
+    imp_denial = _improvement_pct(baseline_denial, denial_rate)
+    imp_mid = _improvement_pct(baseline_mismatch, mismatch_rate)
+    imp_back = _improvement_pct(baseline_recon, recon_backlog_rate)
+
+    b1, b2, b3 = st.columns(3)
+    b1.metric("Denial Reduction Progress (Target 42%)", f"{imp_denial:.1f}%", delta=f"Baseline {baseline_denial:.1f}% -> Current {denial_rate:.1f}%")
+    b2.metric("Coding Leakage Reduction (Target 35%)", f"{imp_mid:.1f}%", delta=f"Baseline {baseline_mismatch:.1f}% -> Current {mismatch_rate:.1f}%")
+    b3.metric("AR/Reconciliation Delay Reduction (Target 20%)", f"{imp_back:.1f}%", delta=f"Baseline {baseline_recon:.1f}% -> Current {recon_backlog_rate:.1f}%")
+
+    st.markdown("---")
+    st.markdown("### 🧭 End-to-End Workflow Tracker")
+    stage_rows = pd.DataFrame(
+        [
+            {
+                "Stage": "Patient Access (Front-End)",
+                "Primary KPI": "Insurance Match Rate",
+                "Current": f"{(master['insurance'].astype(str) == master.get('insurance_pat', master['insurance']).astype(str)).mean()*100:.1f}%",
+                "Owner Action": "Pre-visit eligibility + auth verification",
+            },
+            {
+                "Stage": "Documentation & Coding (Mid-Cycle)",
+                "Primary KPI": "CPT-ICD Mismatch",
+                "Current": f"{mismatch_rate:.1f}%",
+                "Owner Action": "Coder QA and note-to-code validation",
+            },
+            {
+                "Stage": "Revenue Protection (Back-End)",
+                "Primary KPI": "Denial Rate",
+                "Current": f"{denial_rate:.1f}%",
+                "Owner Action": "Predictive denial prevention + appeals routing",
+            },
+            {
+                "Stage": "Collections & Posting (Back-End)",
+                "Primary KPI": "Reconciliation Backlog",
+                "Current": f"{recon_backlog_rate:.1f}%",
+                "Owner Action": "Exception queue and remittance mapping checks",
+            },
+        ]
+    )
+    st.dataframe(stage_rows, use_container_width=True, hide_index=True)
+    st.caption("Baselines are configurable reference targets for demo benchmarking. Replace with your hospital's historical baseline for production tracking.")
+
+    st.markdown("---")
+
+    t1, t2, t3 = st.tabs(["Stage 1: Front-End", "Stage 2: Mid-Cycle", "Stage 3: Back-End"])
+    with t1:
+        insurance_match = (
+            (master["insurance"].astype(str) == master.get("insurance_pat", master["insurance"]).astype(str)).mean() * 100
+            if "insurance" in master.columns
+            else 0.0
+        )
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Insurance Match", f"{insurance_match:.1f}%")
+        c2.metric("Auth-Related Denials", f"{(master['denial_reason'].fillna('None') == 'Auth required').mean()*100:.1f}%")
+        c3.metric("Registration Readiness", f"{max(0.0, min(100.0, insurance_match - 3.5)):.1f}%")
+        st.info("Focus: pre-visit eligibility validation, registration completeness, and authorization readiness.")
+    with t2:
+        mismatch_rate = master["cpt_icd_mismatch"].fillna(False).mean() * 100 if "cpt_icd_mismatch" in master.columns else 0.0
+        coding_review_pool = int(master["cpt_icd_mismatch"].fillna(False).sum()) if "cpt_icd_mismatch" in master.columns else 0
+        c1, c2, c3 = st.columns(3)
+        c1.metric("CPT-ICD Mismatch Rate", f"{mismatch_rate:.1f}%")
+        c2.metric("Coding Review Queue", fmt_number(coding_review_pool))
+        c3.metric("Clinical Documentation Risk", f"{min(99.0, mismatch_rate * 1.2):.1f}%")
+        st.info("Focus: coding integrity, note-to-code alignment, and first-pass claim quality.")
+    with t3:
+        posting_gap = (master["claim_amount"] - master["paid_amount"]).clip(lower=0)
+        recon_backlog = int((posting_gap > 50).sum())
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Appeal Opportunity Pool", fmt_dollar(master[master["is_denied"]]["claim_amount"].sum()))
+        c2.metric("Reconciliation Backlog", fmt_number(recon_backlog))
+        c3.metric("Fraud Surveillance Load", f"{(master['fraud_score'] > 0.8).mean()*100:.1f}%")
+        st.info("Focus: denial prevention-to-appeal automation, payment reconciliation control, and fraud governance.")
 
     st.markdown("---")
 
@@ -2262,7 +2354,7 @@ def page_monitoring_alerts():
 #  Page Router
 # ══════════════════════════════════════════════
 PAGES = {
-    "🏠 Executive Summary": page_executive_summary,
+    "🏥 RCM Command Center": page_executive_summary,
     "🧾 Patient Access & Eligibility": page_patient_access_eligibility,
     "🚫 Denial Intelligence": page_denial_intelligence,
     "📋 Appeals Analytics": page_appeals_analytics,
