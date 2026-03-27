@@ -24,6 +24,9 @@ AI-powered Revenue Cycle Management prototype with Streamlit dashboard, ML model
 - `ml_engine.py` - Model train/load/score pipeline
 - `data_loader.py` - CSV loading + feature preparation
 - `rcm_agent.py` - Coordinator and specialist agents
+- `front_end_agent.py` - Stage 1 patient access and eligibility orchestration
+- `mid_cycle_agent.py` - Stage 2 coding/documentation validation orchestration
+- `back_end_agent.py` - Stage 3 denial/appeals/fraud/reconciliation orchestration
 - `langgraph_rcm_chatbot.py` - LangGraph claim chatbot flow
 - `custom_coding_agent.py` - CPT/ICD coding recommendation logic
 - `clinical_nlp_agent.py` - Clinical note to ICD prediction support
@@ -43,7 +46,10 @@ flowchart LR
     C --> D[models/*.joblib]
     B --> E[app.py Streamlit]
     C --> E
-    F[rcm_agent.py] --> E
+    F[rcm_agent.py Coordinator] --> E
+    F1[front_end_agent.py] --> F
+    F2[mid_cycle_agent.py] --> F
+    F3[back_end_agent.py] --> F
     G[langgraph_rcm_chatbot.py] --> E
     H[groq_agent_summary.py / ollama_agent_summary.py] --> E
     B --> I[backend_api.py]
@@ -76,8 +82,22 @@ flowchart TD
     C5 --> D
     C8 --> D
     C7 --> D
-    D --> E[Observe -> Think -> Plan -> Act -> Learn]
+    D --> E1[Stage 1 Front-End Agent]
+    E1 --> E2[Stage 2 Mid-Cycle Agent]
+    E2 --> E3[Stage 3 Back-End Agent]
+    E3 --> F[Consolidated Actions + Supervisor Approval]
 ```
+
+## Three-Stage PDF Alignment
+
+- **Stage 1: Front-End Automation (`front_end_agent.py`)**
+  - Eligibility/auth readiness and pre-submission scrubbing actions.
+- **Stage 2: Mid-Cycle (`mid_cycle_agent.py`)**
+  - CPT/ICD + NLP coding validation and coding-review triggers.
+- **Stage 3: Back-End Efficiency (`back_end_agent.py`)**
+  - Appeals prioritization/letter draft, fraud control, and reconciliation actions.
+- **Coordinator (`rcm_agent.py`)**
+  - Sequential stage handoffs: Front-End -> Mid-Cycle -> Back-End -> final action plan.
 
 ---
 

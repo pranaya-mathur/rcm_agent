@@ -1359,7 +1359,13 @@ def page_agentic_rcm_agent():
     predictions_by_id = cached_claim_predictions()
 
     # Input
-    claim_id = st.number_input("Enter Claim ID", min_value=1, step=1, value=int(master["claim_id"].iloc[0]))
+    col_i1, col_i2 = st.columns([2, 3])
+    with col_i1:
+        claim_id = st.number_input("Enter Claim ID", min_value=1, step=1, value=int(master["claim_id"].iloc[0]))
+    with col_i2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        force_appeal = st.checkbox("Draft Appeal Letter even if predicted success is low", value=False)
+
     if claim_id not in predictions_by_id:
         st.error("Claim ID not found in dataset.")
         return
@@ -1370,7 +1376,7 @@ def page_agentic_rcm_agent():
 
     # Run agent
     agent = CoordinatorAgent()
-    agent_out = agent.run(claim=claim_row, predictions=pred)
+    agent_out = agent.run(claim=claim_row, predictions=pred, force_appeal=force_appeal)
 
     st.markdown("---")
     st.markdown("### Final Recommendation")
@@ -1411,8 +1417,15 @@ def page_agentic_rcm_agent():
             st.write(f"NLP ICD candidates: {nlp_text}")
 
     if agent_out.appeal_letter:
-        st.markdown("### Draft Appeal Letter (Template)")
-        st.text_area("Appeal Letter", agent_out.appeal_letter, height=250)
+        st.markdown("### Draft Appeal Letter (Professional Template)")
+        st.text_area("Appeal Letter", agent_out.appeal_letter, height=400)
+    elif claim_row.get("is_denied"):
+        st.markdown("### Draft Appeal Letter")
+        st.warning(
+            f"ML model predicts a low success probability ({pred.get('p_appeal_success', 0.0):.1%}) "
+            f"for this claim. Draft skipped to prioritize high-yield recovery."
+        )
+        st.info("Tip: Use the checkbox above to 'Force Draft' if you still wish to proceed.")
 
     st.markdown("---")
     st.markdown("### Generate 2-page Summary (Groq)")

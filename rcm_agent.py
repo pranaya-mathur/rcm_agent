@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+from front_end_agent import FrontEndAgent
+from mid_cycle_agent import MidCycleAgent
+from back_end_agent import BackEndAgent
 
 
 @dataclass
@@ -82,39 +85,58 @@ class AppealsAgent:
     name = "Appeals Agent"
 
     def run(self, claim: Dict[str, Any], p_appeal_success: float, expected_recovery: float,
-            success_threshold: float = 0.55) -> Dict[str, Any]:
-        appealable = p_appeal_success >= success_threshold and expected_recovery > 0
+            success_threshold: float = 0.55, force_appeal: bool = False) -> Dict[str, Any]:
+        
+        # Decision logic: appealable if above threshold OR if user forced it.
+        is_high_yield = p_appeal_success >= success_threshold and expected_recovery > 0
+        appealable = is_high_yield or force_appeal
 
         denial_reason = claim.get("denial_reason", "Unknown")
         appeal_letter = None
+        
         if appealable:
             patient_id = claim.get("patient_id", "N/A")
             icd = claim.get("icd_code", "N/A")
             visit_type = claim.get("visit_type", "N/A")
+            claim_id = claim.get("claim_id", "N/A")
+            payer = claim.get("insurance", "Payer")
 
+            # Improved, more professional medical appeal template
             appeal_letter = (
-                f"Subject: Appeal Request for Claim {claim.get('claim_id')}\n"
-                f"Denial Reason: {denial_reason}\n"
+                f"Date: [Current Date]\n"
+                f"To: Claims Appeals Department - {payer}\n"
+                f"Re: FORMAL APPEAL FOR CLAIM #{claim_id}\n\n"
                 f"Patient ID: {patient_id}\n"
                 f"Visit Type: {visit_type}\n"
-                f"ICD Code: {icd}\n\n"
-                "Dear Supervisor,\n\n"
-                "We respectfully request reconsideration of the denied claim.\n"
-                "Action plan (per ML prioritization):\n"
-                "- Attach missing documentation and/or authorization evidence as required.\n"
-                "- Ensure CPT-ICD coding alignment where mismatch risk is detected.\n\n"
-                f"Predicted appeal success probability: {p_appeal_success:.2%}\n"
-                f"Expected recovery (estimate): ${expected_recovery:,.2f}\n\n"
-                "Sincerely,\nRCM Agent Team"
+                f"ICD-10 Code: {icd}\n"
+                f"Denial Reason: {denial_reason}\n\n"
+                f"Dear Appeals Supervisor,\n\n"
+                f"We are formally appealing the denial of the above-referenced claim. Our internal "
+                f"clinical review indicates that the services provided were medically necessary and "
+                f"conform to standard billing protocols for {visit_type} encounters.\n\n"
+                f"Action taken to address the denial reason ({denial_reason}):\n"
+                f"1. Clinical documentation has been reviewed and is attached for reconsideration.\n"
+                f"2. Coding validation has been performed to ensure alignment between CPT and ICD-10 codes.\n"
+                f"3. Any required authorizations have been cross-referenced with your payer database.\n\n"
+                f"Based on our predictive revenue cycle metrics (Success Probability: {p_appeal_success:.1%}), "
+                f"we believe this claim meets all requirements for full reimbursement totaling ${expected_recovery:,.2f}.\n\n"
+                f"Please re-process this claim at your earliest convenience. If you require further "
+                f"information, please contact the RCM department immediately.\n\n"
+                f"Sincerely,\n"
+                f"Revenue Cycle Management Team\n"
+                f"[Internal ML Agent ID: RCM-APPEAL-BETA]"
             )
 
         actions = []
         if appealable:
-            actions.append("Draft appeal letter and attach supporting documents")
+            actions.append("Draft professional appeal letter and attach supporting documents")
             actions.append("Submit appeal for reprocessing (human approval recommended)")
+        if force_appeal and not is_high_yield:
+            actions.append("Note: Appeal drafted via manual override (low predicted success)")
 
         return {
             "appealable": appealable,
+            "is_high_yield": is_high_yield,
             "actions": actions,
             "appeal_letter": appeal_letter,
         }
@@ -191,6 +213,7 @@ class CoordinatorAgent:
         self,
         claim: Dict[str, Any],
         predictions: Dict[str, Any],
+        force_appeal: bool = False,
     ) -> AgentOutput:
         steps: List[AgentStep] = []
         action_items: List[str] = []
@@ -205,87 +228,74 @@ class CoordinatorAgent:
         reconciliation_risk_probability = float(predictions.get("reconciliation_risk_probability", 0.0))
 
         # Observe
-        steps.append(AgentStep(self.name, "Observe",
-                                f"Claim {claim.get('claim_id')} observed with denial_reason={claim.get('denial_reason')}."))
+        steps.append(
+            AgentStep(
+                self.name,
+                "Observe",
+                f"Claim {claim.get('claim_id')} observed with denial_reason={claim.get('denial_reason')}.",
+            )
+        )
 
-        # Think + Plan
-        denial_agent = DenialPredictionAgent()
-        denial_out = denial_agent.run(claim, denial_probability)
-        steps.append(AgentStep(denial_agent.name, "Think",
-                                f"Denial risk={denial_out['risk_level']} (p={denial_probability:.1%})."))
+        # Stage 1: Front-End
+        front_stage = FrontEndAgent().run(claim, predictions)
+        steps.append(AgentStep("Front-End Agent", "Think", front_stage["summary"]))
+        steps.append(AgentStep("Front-End Agent", "Handoff", front_stage["handoff"]))
+        action_items.extend(front_stage.get("actions", []))
 
-        scrub_agent = ScrubbingAgent()
-        scrub_out = scrub_agent.run(claim, mismatch_probability, denial_probability)
-        steps.append(AgentStep(scrub_agent.name, "Plan",
-                                f"Scrubbing recommendation prepared (mismatch_p={mismatch_probability:.1%})."))
+        # Stage 2: Mid-Cycle
+        mid_stage = MidCycleAgent().run(claim, predictions)
+        steps.append(AgentStep("Mid-Cycle Agent", "Plan", mid_stage["summary"]))
+        steps.append(AgentStep("Mid-Cycle Agent", "Handoff", mid_stage["handoff"]))
+        action_items.extend(mid_stage.get("actions", []))
 
-        appeals_agent = AppealsAgent()
-        appeals_out = appeals_agent.run(claim, p_appeal_success, expected_recovery)
-        if appeals_out["appealable"]:
-            steps.append(AgentStep(appeals_agent.name, "Plan",
-                                    f"Appeal recommended (p_success={p_appeal_success:.1%})."))
-        else:
-            steps.append(AgentStep(appeals_agent.name, "Plan",
-                                    "Appeal not recommended based on predicted success/recovery."))
+        # Stage 3: Back-End
+        back_stage = BackEndAgent().run(claim, predictions, force_appeal=force_appeal)
+        steps.append(AgentStep("Back-End Agent", "Act", back_stage["summary"]))
+        steps.append(AgentStep("Back-End Agent", "Handoff", back_stage["handoff"]))
+        action_items.extend(back_stage.get("actions", []))
 
-        fraud_agent = FraudAgent()
-        fraud_out = fraud_agent.run(claim, fraud_probability_improved)
-        if fraud_out["high_fraud"]:
-            steps.append(AgentStep(fraud_agent.name, "Plan",
-                                    f"Fraud risk flagged (p={fraud_probability_improved:.1%})."))
-        else:
-            steps.append(AgentStep(fraud_agent.name, "Plan", "Fraud risk within acceptable range."))
-
-        recon_agent = ReconciliationAgent()
-        recon_out = recon_agent.run(reconciliation_risk_probability)
-        if recon_out["high_recon_risk"]:
-            steps.append(AgentStep(recon_agent.name, "Plan",
-                                   f"Reconciliation risk flagged (p={reconciliation_risk_probability:.1%})."))
-        else:
-            steps.append(AgentStep(recon_agent.name, "Plan", "Reconciliation risk within acceptable range."))
-
-        coding_agent = CodingValidationAgent()
-        coding_out = coding_agent.run(coding_reco, mismatch_probability, nlp_coding_reco)
-        if coding_out["needs_review"]:
-            steps.append(AgentStep(coding_agent.name, "Plan", "Coding validation review triggered."))
-        else:
-            steps.append(AgentStep(coding_agent.name, "Plan", "Coding appears consistent with historical patterns."))
-
-        # Act
-        action_items.extend(scrub_out["actions"])
-        action_items.extend(appeals_out["actions"])
-        action_items.extend(fraud_out["actions"])
-        action_items.extend(recon_out["actions"])
-        action_items.extend(coding_out["actions"])
-
-        # Human-in-the-loop guardrail:
+        # Human-in-the-loop guardrail.
         action_items.append("Supervisor approval required before any submission/appeal action")
 
         # Learn (demo placeholder)
-        steps.append(AgentStep(self.name, "Learn",
-                                "Outcome feedback will be stored for future calibration (demo placeholder)."))
+        steps.append(
+            AgentStep(
+                self.name,
+                "Learn",
+                "Stage outcomes captured for future calibration and workflow optimization (demo placeholder).",
+            )
+        )
 
-        recommendation = scrub_out["recommendation"]
+        recommendation = front_stage.get("recommendation", "Standard scrubbing + coding review")
+        back_metrics = back_stage.get("metrics", {})
+        mid_metrics = mid_stage.get("metrics", {})
+        front_metrics = front_stage.get("metrics", {})
+        appeal_letter = back_stage.get("artifacts", {}).get("appeal_letter")
 
         return AgentOutput(
             steps=steps,
             recommendation=recommendation,
-            appeal_letter=appeals_out.get("appeal_letter"),
+            appeal_letter=appeal_letter,
             action_items=action_items,
             metrics={
-                "denial_probability": denial_probability,
-                "mismatch_probability": mismatch_probability,
-                "fraud_probability_improved": fraud_probability_improved,
-                "p_appeal_success": p_appeal_success,
-                "expected_recovery": expected_recovery,
-                "denial_risk_level": denial_out["risk_level"],
-                "appealable": appeals_out["appealable"],
-                "high_fraud": fraud_out["high_fraud"],
-                "reconciliation_risk_probability": reconciliation_risk_probability,
-                "reconciliation_review_required": recon_out["high_recon_risk"],
-                "coding_review_required": coding_out["needs_review"],
-                "coding_recommendation": coding_reco.get("recommendation") if isinstance(coding_reco, dict) else None,
-                "nlp_coding_recommendation": nlp_coding_reco.get("recommendation") if isinstance(nlp_coding_reco, dict) else None,
+                "denial_probability": front_metrics.get("denial_probability", denial_probability),
+                "mismatch_probability": front_metrics.get("mismatch_probability", mismatch_probability),
+                "fraud_probability_improved": back_metrics.get("fraud_probability_improved", fraud_probability_improved),
+                "p_appeal_success": back_metrics.get("p_appeal_success", p_appeal_success),
+                "expected_recovery": back_metrics.get("expected_recovery", expected_recovery),
+                "denial_risk_level": front_metrics.get("denial_risk_level", "LOW"),
+                "appealable": back_metrics.get("appealable", False),
+                "high_fraud": back_metrics.get("high_fraud", False),
+                "reconciliation_risk_probability": back_metrics.get(
+                    "reconciliation_risk_probability", reconciliation_risk_probability
+                ),
+                "reconciliation_review_required": back_metrics.get("reconciliation_review_required", False),
+                "coding_review_required": mid_metrics.get("coding_review_required", False),
+                "coding_recommendation": mid_metrics.get("coding_recommendation"),
+                "nlp_coding_recommendation": mid_metrics.get("nlp_coding_recommendation"),
+                "stage_front_end": front_stage,
+                "stage_mid_cycle": mid_stage,
+                "stage_back_end": back_stage,
             },
         )
 
