@@ -186,3 +186,29 @@ def load_live_frames() -> Dict[str, pd.DataFrame]:
         "cpt_lines": cpt_lines,
     }
 
+
+def get_live_stats() -> Dict[str, Any]:
+    """
+    Small summary for command-center demo banner.
+    """
+    init_db()
+    with _connect() as con:
+        row = con.execute(
+            """
+            SELECT
+                COUNT(*) as cnt,
+                MAX(claim_id) as last_claim_id,
+                MAX(updated_at) as last_updated_at
+            FROM live_claim_payloads
+            """
+        ).fetchone()
+
+    cnt = int(row[0] or 0)
+    last_claim_id = int(row[1]) if row[1] is not None else None
+    last_updated_at = str(row[2]) if row[2] is not None else None
+    return {
+        "count": cnt,
+        "last_claim_id": last_claim_id,
+        "last_updated_at": last_updated_at,
+    }
+

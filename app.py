@@ -10,6 +10,7 @@ from utils_ui import (
     shared_page_init, render_page_header, metric_card, 
     plotly_layout, COLORS, fmt_dollar, fmt_number
 )
+from src.core.demo_db import get_live_stats
 
 def main():
     st.set_page_config(
@@ -23,6 +24,18 @@ def main():
     render_page_header(
         "Healthcare Revenue Cycle Command Center", 
         "Enterprise-wide intelligence across Patient Access, Mid-Cycle Integrity, and Back-End Recovery."
+    )
+    live = get_live_stats()
+    st.markdown(
+        (
+            "🟦 **Live DB Intake (Demo Mode):** "
+            f"Persisted claims: **{live.get('count', 0)}**"
+            + (
+                f" | Last Claim ID: **{live.get('last_claim_id')}** | Updated: **{live.get('last_updated_at')}**"
+                if live.get("last_claim_id") is not None
+                else ""
+            )
+        )
     )
 
     # ──────────────────────────────────────────────
