@@ -1,6 +1,6 @@
 # AI-Powered Smart RCM Prototype
 
-AI-powered Revenue Cycle Management prototype with Streamlit dashboard, ML models, agentic claim orchestration, LangGraph chatbot, and a React demo UI.
+AI-powered Revenue Cycle Management prototype with Streamlit dashboard, ML models, agentic claim orchestration, Groq-powered RCM AI Copilot (LangGraph), and a React demo UI.
 
 ## What Is Implemented
 
@@ -12,7 +12,7 @@ AI-powered Revenue Cycle Management prototype with Streamlit dashboard, ML model
 - Payment reconciliation risk scoring
 - Revenue trend forecasting and what-if style exploration
 - Agentic workflow (`CoordinatorAgent` + specialized agents)
-- LangGraph claim-level chatbot in Streamlit
+- Groq-powered claim-level RCM AI Copilot in Streamlit (LangGraph orchestration)
 - 2-page narrative summary generation via Groq or Ollama
 - Lightweight Python backend API + React (no-build CDN) UI
 
@@ -27,7 +27,7 @@ AI-powered Revenue Cycle Management prototype with Streamlit dashboard, ML model
 - `front_end_agent.py` - Stage 1 patient access and eligibility orchestration
 - `mid_cycle_agent.py` - Stage 2 coding/documentation validation orchestration
 - `back_end_agent.py` - Stage 3 denial/appeals/fraud/reconciliation orchestration
-- `langgraph_rcm_chatbot.py` - LangGraph claim chatbot flow
+- `langgraph_rcm_chatbot.py` - LangGraph + Groq claim copilot flow
 - `custom_coding_agent.py` - CPT/ICD coding recommendation logic
 - `clinical_nlp_agent.py` - Clinical note to ICD prediction support
 - `groq_agent_summary.py` - Groq-based 2-page summary generation
@@ -114,7 +114,7 @@ flowchart TD
 - Monitoring & Alerts
 - AR Aging & Lifecycle
 - Agentic RCM Agent
-- LangGraph Chatbot
+- RCM AI Copilot (Groq + LangGraph)
 - AI Denial Predictor
 
 Sidebar is grouped by operational stage for demo flow:
