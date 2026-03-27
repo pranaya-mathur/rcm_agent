@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from src.core.data_loader import build_master, get_cpt_summary, load_all
+from src.core.demo_db import upsert_live_claim
 from src.core import ml_engine
 from src.agents.rcm_agent import CoordinatorAgent
 from src.agents.custom_coding_agent import build_cpt_icd_knowledge, build_coding_recommendation
@@ -343,6 +344,22 @@ def build_realtime_agent_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _clear_data_caches() -> None:
+    # Ensure new persisted claims appear in Streamlit/API reads.
+    try:
+        load_all.clear()
+    except Exception:
+        pass
+    try:
+        build_master.clear()
+    except Exception:
+        pass
+    try:
+        get_cpt_summary.clear()
+    except Exception:
+        pass
+
+
 def build_agent_claim_payload(claim_id: int) -> Dict[str, Any]:
     master = build_master().reset_index(drop=True).copy()
     if claim_id not in set(master["claim_id"].astype(int).tolist()):
@@ -526,7 +543,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(json.dumps({"ok": False, "error": "JSON payload must be an object"}).encode("utf-8"))
                     return
 
+                persist = bool(payload.get("persist", False))
+                payload_no_flag = {k: v for k, v in payload.items() if k != "persist"}
                 result = build_realtime_agent_payload(payload)
+                if persist and result.get("ok", False):
+                    upsert_live_claim(payload_no_flag)
+                    _clear_data_caches()
+                    result["persisted"] = True
+                else:
+                    result["persisted"] = False
                 status = 200 if result.get("ok", False) else 400
                 self._set_headers(status)
                 self.wfile.write(json.dumps(result).encode("utf-8"))

@@ -200,6 +200,7 @@ Base URL: `http://localhost:8001`
 ### Realtime single-claim inference (no CSV append needed)
 
 Use `POST /api/score-claim` to score a new incoming claim payload and run `CoordinatorAgent`.
+Add `"persist": true` in payload if you want the claim stored into demo SQLite and reflected in Streamlit/API datasets.
 
 Example:
 
@@ -224,7 +225,8 @@ curl -X POST "http://localhost:8001/api/score-claim" \
     "appeal_success": false,
     "cpt_codes": ["99213", "80053"],
     "total_cpt_amount": 1750,
-    "clinical_notes": "Diabetes follow-up, lab review, medication adjustment."
+    "clinical_notes": "Diabetes follow-up, lab review, medication adjustment.",
+    "persist": true
   }'
 ```
 

@@ -7,12 +7,14 @@ import os
 import streamlit as st
 import pandas as pd
 import numpy as np
+from typing import Optional
+from src.core.demo_db import load_live_frames, db_signature
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 
 @st.cache_data(show_spinner=False)
-def load_all():
+def load_all(_db_sig: Optional[float] = None):
     """Load every CSV and return a dict of DataFrames."""
     files = {
         "claims":     "v3_claims.csv",
@@ -30,6 +32,22 @@ def load_all():
     dfs = {}
     for key, fname in files.items():
         dfs[key] = pd.read_csv(os.path.join(DATA_DIR, fname))
+
+    # Merge live claims captured in SQLite demo DB (if any).
+    live = load_live_frames()
+    for key, live_df in live.items():
+        if key not in dfs or live_df is None or len(live_df) == 0:
+            continue
+        base_df = dfs[key]
+        # Keep latest version by key while preferring live records on collisions.
+        if "claim_id" in base_df.columns and "claim_id" in live_df.columns:
+            combined = pd.concat([base_df, live_df], ignore_index=True)
+            dfs[key] = combined.drop_duplicates(subset=["claim_id"], keep="last")
+        elif "encounter_id" in base_df.columns and "encounter_id" in live_df.columns:
+            combined = pd.concat([base_df, live_df], ignore_index=True)
+            dfs[key] = combined.drop_duplicates(subset=["encounter_id"], keep="last")
+        else:
+            dfs[key] = pd.concat([base_df, live_df], ignore_index=True)
     return dfs
 
 
@@ -39,7 +57,7 @@ def build_master():
     Build a master claims-level DataFrame by merging:
     claims + payments + denials + fraud + scrubbing + encounters + patients + icd
     """
-    dfs = load_all()
+    dfs = load_all(_db_sig=db_signature())
 
     master = dfs["claims"].copy()
 
@@ -102,7 +120,7 @@ def build_master():
 @st.cache_data(show_spinner=False)
 def build_events_timeline():
     """Pivot events to get per-claim timestamps for CREATED, SUBMITTED, PROCESSED."""
-    dfs = load_all()
+    dfs = load_all(_db_sig=db_signature())
     events = dfs["events"].copy()
     events["timestamp"] = pd.to_datetime(events["timestamp"])
 
@@ -126,7 +144,7 @@ def get_cpt_summary(top_k: int = 25):
     Includes aggregate features (num_cpt_codes, total_cpt_amount) plus counts for the
     most frequent CPT codes across the dataset to make CPT-aware ML feasible.
     """
-    dfs = load_all()
+    dfs = load_all(_db_sig=db_signature())
     cpt = dfs["cpt_lines"].copy()
 
     # Base aggregates
