@@ -41,21 +41,30 @@ AI-powered Revenue Cycle Management prototype with Streamlit dashboard, ML model
 
 ```mermaid
 flowchart LR
-    A[CSV Data in data/] --> B[data_loader.py]
-    B --> C[ml_engine.py]
-    C --> D[models/*.joblib]
+    A[Historical CSV Data<br/>src/core/data/] --> B[src/core/data_loader.py]
+    DB[Live SQLite DB<br/>src/core/demo_live.sqlite3] --> B
+    DBM[src/core/demo_db.py] --> DB
+
+    B --> C[src/core/ml_engine.py]
+    C --> D[src/core/models/*.joblib]
     B --> E[app.py Streamlit]
     C --> E
-    F[rcm_agent.py Coordinator] --> E
-    F1[front_end_agent.py] --> F
-    F2[mid_cycle_agent.py] --> F
-    F3[back_end_agent.py] --> F
-    G[langgraph_rcm_chatbot.py] --> E
-    H[groq_agent_summary.py / ollama_agent_summary.py] --> E
-    B --> I[backend_api.py]
+    DBM --> E
+
+    F[src/agents/rcm_agent.py Coordinator] --> E
+    F1[src/agents/front_end_agent.py] --> F
+    F2[src/agents/mid_cycle_agent.py] --> F
+    F3[src/agents/back_end_agent.py] --> F
+    G[src/agents/langgraph_rcm_chatbot.py<br/>RCM AI Copilot] --> E
+    H[src/agents/groq_agent_summary.py / ollama_agent_summary.py] --> E
+
+    B --> I[src/api/backend_api.py]
     C --> I
     F --> I
+    DBM --> I
     I --> J[frontend/app.js React UI]
+    I --> K[POST /api/score-claim<br/>persist=true]
+    K --> DB
 ```
 
 ---
@@ -86,6 +95,21 @@ flowchart TD
     E1 --> E2[Stage 2 Mid-Cycle Agent]
     E2 --> E3[Stage 3 Back-End Agent]
     E3 --> F[Consolidated Actions + Supervisor Approval]
+```
+
+## Live Ingestion Flow (Demo DB Mode)
+
+```mermaid
+flowchart TD
+    U[Incoming New Claim JSON] --> A[POST /api/score-claim]
+    A --> B[Runtime Scoring + CoordinatorAgent]
+    B --> C[Response to user/client]
+    A --> D{persist=true?}
+    D -- yes --> E[src/core/demo_db.py upsert_live_claim]
+    E --> F[SQLite: demo_live.sqlite3]
+    F --> G[src/core/data_loader.py merge live + historical]
+    G --> H[Streamlit Pages + API Summary reflect new claim]
+    D -- no --> C
 ```
 
 ## Three-Stage PDF Alignment
