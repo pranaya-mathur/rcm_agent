@@ -382,7 +382,8 @@ def load_mismatch_model():
 
 def score_all_mismatch(master_df: pd.DataFrame, cpt_summary_df: pd.DataFrame, model, feature_cols):
     X, _, _ = _build_mismatch_feature_df(master_df, cpt_summary_df)
-    X = X[feature_cols]
+    # Align features with training-time feature_cols
+    X = X.reindex(columns=feature_cols, fill_value=0)
     probs = model.predict_proba(X)[:, 1]
     return probs
 
@@ -747,7 +748,8 @@ def score_fraud_enhanced(master_df: pd.DataFrame, cpt_summary_df: pd.DataFrame,
                          fraud_anomaly_model, fraud_anomaly_meta,
                          alpha: float = 0.6):
     X, _ = _build_fraud_feature_df(master_df, cpt_summary_df, include_fraud_score=False)
-    X = X[fraud_prob_feature_cols]
+    # Align features
+    X = X.reindex(columns=fraud_prob_feature_cols, fill_value=0)
     p_fraud = fraud_prob_model.predict_proba(X)[:, 1]
 
     # Anomaly score -> probability-like scaling (min-max over scored set).

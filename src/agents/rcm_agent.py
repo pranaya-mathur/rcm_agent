@@ -15,9 +15,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from front_end_agent import FrontEndAgent
-from mid_cycle_agent import MidCycleAgent
-from back_end_agent import BackEndAgent
+from src.agents.front_end_agent import FrontEndAgent
+from src.agents.mid_cycle_agent import MidCycleAgent
+from src.agents.back_end_agent import BackEndAgent
 
 
 @dataclass

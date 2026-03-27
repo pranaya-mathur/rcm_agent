@@ -20,11 +20,11 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from data_loader import build_master, get_cpt_summary, load_all
-import ml_engine
-from rcm_agent import CoordinatorAgent
-from custom_coding_agent import build_cpt_icd_knowledge, build_coding_recommendation
-from clinical_nlp_agent import train_notes_to_icd_model, predict_icd_from_notes_batch, build_nlp_coding_recommendation
+from src.core.data_loader import build_master, get_cpt_summary, load_all
+from src.core import ml_engine
+from src.agents.rcm_agent import CoordinatorAgent
+from src.agents.custom_coding_agent import build_cpt_icd_knowledge, build_coding_recommendation
+from src.agents.clinical_nlp_agent import train_notes_to_icd_model, predict_icd_from_notes_batch, build_nlp_coding_recommendation
 
 
 HOST = "0.0.0.0"

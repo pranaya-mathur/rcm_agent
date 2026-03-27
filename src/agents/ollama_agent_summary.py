@@ -36,7 +36,7 @@ def generate_two_page_agent_summary_ollama(
     """
     Returns (page1_markdown, page2_markdown).
 
-    agent_out is duck-typed from rcm_agent.AgentOutput.
+    agent_out is duck-typed from src.agents.rcm_agent.AgentOutput.
     """
     steps = getattr(agent_out, "steps", [])
     steps_summaries = [
