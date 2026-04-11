@@ -227,6 +227,18 @@ def predict_single_claim(claim_dict, model, feature_cols):
     }
 
 
+def score_denial_portfolio(master_df: pd.DataFrame, cpt_summary_df: pd.DataFrame, model, feature_cols):
+    """
+    Score denial probabilities for the current portfolio.
+
+    This should be preferred over cached metadata probabilities whenever the
+    underlying dataset may have changed since model training/loading.
+    """
+    df, _ = _build_feature_df(master_df, cpt_summary_df)
+    X = df.reindex(columns=feature_cols, fill_value=0).fillna(0)
+    return model.predict_proba(X)[:, 1]
+
+
 # ============================================================
 # Phase 3 — CPT-ICD Mismatch Probability Model
 # ============================================================

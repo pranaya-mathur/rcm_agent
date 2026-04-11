@@ -15,6 +15,7 @@ from src.core.data_loader import get_cpt_summary
 
 def page_denial_predictor():
     master, _, _ = shared_page_init()
+    cpt_summary = get_cpt_summary()
     
     render_page_header(
         "🧠 AI Denial Predictor & Risk Analysis",
@@ -31,6 +32,7 @@ def page_denial_predictor():
         return model, meta
 
     model, meta = cached_model()
+    portfolio_probs = ml_engine.score_denial_portfolio(master, cpt_summary, model, meta["feature_cols"])
 
     st.markdown("<br>", unsafe_allow_html=True)
     tab1, tab2, tab3 = st.tabs(["🎯 Interactive Predictor", "📈 Portfolio Risk", "⚙️ Model Health"])
@@ -82,8 +84,7 @@ def page_denial_predictor():
 
     with tab2:
         st.markdown("### 📊 Portfolio Probability Distribution")
-        all_probs = meta["all_probabilities"]
-        fig = px.histogram(all_probs, nbins=50, color_discrete_sequence=[COLORS["secondary"]])
+        fig = px.histogram(portfolio_probs, nbins=50, color_discrete_sequence=[COLORS["secondary"]])
         plotly_layout(fig, "Claim Denial Dispersion", 400)
         st.plotly_chart(fig, use_container_width=True)
         st.caption("Distribution of predicted denial probabilities across the active claim portfolio.")

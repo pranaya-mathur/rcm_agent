@@ -406,7 +406,10 @@ def build_agent_claim_payload(claim_id: int) -> Dict[str, Any]:
         recon_model, recon_meta = tmp["model"], tmp["meta"]
 
     # Batch scores (for aligned indexing)
-    denial_probs = np.array(denial_meta.get("all_probabilities", np.zeros(len(master))), dtype=float)
+    denial_probs = np.array(
+        ml_engine.score_denial_portfolio(master, cpt_summary, denial_model, denial_meta["feature_cols"]),
+        dtype=float,
+    )
     mismatch_probs = ml_engine.score_all_mismatch(master, cpt_summary, mismatch_model, mismatch_meta["feature_cols"])
     fraud_df = ml_engine.score_fraud_enhanced(
         master, cpt_summary, fraud_prob_model, fraud_prob_meta["feature_cols"], fraud_anomaly_model, fraud_anomaly_meta, alpha=0.6
@@ -569,4 +572,3 @@ if __name__ == "__main__":
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"RCM API running on http://{HOST}:{PORT}")
     server.serve_forever()
-

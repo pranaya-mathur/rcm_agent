@@ -18,7 +18,11 @@ class FrontEndAgent:
 
         denial_risk = "HIGH" if denial_probability >= 0.7 else ("MEDIUM" if denial_probability >= 0.4 else "LOW")
         high_scrub_risk = denial_probability >= 0.7 or mismatch_probability >= 0.7
-        recommendation = "Is claim mein Auth required add kar do" if high_scrub_risk else "Standard scrubbing + coding review"
+        recommendation = (
+            "Add 'Auth required' to this claim and review documentation."
+            if high_scrub_risk
+            else "Standard scrubbing + coding review"
+        )
 
         actions: List[str] = []
         if bool(claim.get("strict_insurance_flag", False)):
@@ -52,4 +56,3 @@ class FrontEndAgent:
             },
             "handoff": handoff,
         }
-

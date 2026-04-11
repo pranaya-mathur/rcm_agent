@@ -61,8 +61,7 @@ class ScrubbingAgent:
             mismatch_threshold: float = 0.7, denial_threshold: float = 0.7) -> Dict[str, Any]:
         high = (denial_probability >= denial_threshold) or (mismatch_probability >= mismatch_threshold)
         if high:
-            # Exact recommendation requested for demo.
-            rec = "Is claim mein Auth required add kar do"
+            rec = "Add 'Auth required' to this claim and review documentation."
         else:
             rec = "Standard scrubbing + coding review"
 
@@ -298,4 +297,3 @@ class CoordinatorAgent:
                 "stage_back_end": back_stage,
             },
         )
-

@@ -47,7 +47,7 @@ def main():
         metric_card("Total Billed AR", fmt_dollar(total_billed), "8.2% vs Last Month", delta_up=True)
     with c2:
         denial_rate = master["is_denied"].mean() * 100
-        metric_card("Net Denial Rate", f"{denial_rate:.11f}%", "-2.4% reduction", delta_up=False)
+        metric_card("Net Denial Rate", f"{denial_rate:.1f}%", "-2.4% reduction", delta_up=False)
     with c3:
         clean_rate = master["is_clean_claim"].mean() * 100
         metric_card("Clean Claim Rate", f"{clean_rate:.1f}%", "Target: 95%+", delta_up=True)

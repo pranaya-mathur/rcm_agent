@@ -38,8 +38,12 @@ outputs/
 models/*.joblib
 models/*.pkl
 models/*.bin
+src/core/models/*.joblib
+src/core/models/*.pkl
+src/core/models/*.bin
 *.h5
 *.onnx
+src/core/demo_live.sqlite3
 
 # -----------------------------
 # Streamlit
@@ -66,4 +70,3 @@ pnpm-debug.log*
 Thumbs.db
 .idea/
 .vscode/
-

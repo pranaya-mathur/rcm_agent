@@ -90,7 +90,7 @@ def page_scrubbing():
     mismatch_model, mismatch_meta, denial_model, denial_meta = cached_models()
     cpt_s = get_cpt_summary()
     mismatch_probs = ml_engine.score_all_mismatch(master, cpt_s, mismatch_model, mismatch_meta["feature_cols"])
-    denial_probs = denial_meta.get("all_probabilities", np.zeros(len(master)))
+    denial_probs = ml_engine.score_denial_portfolio(master, cpt_s, denial_model, denial_meta["feature_cols"])
 
     phase3_df = master[["claim_id", "insurance", "claim_amount", "visit_type", "icd_code", "cpt_icd_mismatch"]].copy()
     phase3_df["mismatch_probability"] = mismatch_probs

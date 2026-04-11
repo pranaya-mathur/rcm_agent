@@ -105,7 +105,7 @@ def generate_two_page_agent_summary(
                     "Title/Section. Stages: Predictive Denial, Smart Scrubbing, Appeals Prioritization, Fraud Detection, Agentic Workflow.\n"
                     "4) On Page 2 include: 'Demo Walkthrough' (what to click on the dashboard) and 'Expected Outputs'.\n"
                     "5) Must explicitly include the scrubbing recommendation text when present: "
-                    "\"Is claim mein Auth required add kar do\".\n\n"
+                    "\"Add 'Auth required' to this claim and review documentation.\".\n\n"
                     "AgentOutput JSON:\n"
                     f"{agent_output_json}"
                 ),
@@ -169,4 +169,3 @@ def markdown_to_html_page(
   <pre>{markdown_text}</pre>
 </body>
 </html>"""
-
