@@ -1,5 +1,5 @@
 """
-12_RCM_AI_Copilot.py — RCM AI Copilot (Groq + LangGraph) with Premium UI
+12_RCM_AI_Copilot.py — RCM AI Copilot (LangGraph) with Premium UI
 """
 
 import streamlit as st
@@ -7,14 +7,14 @@ from utils_ui import shared_page_init, render_page_header, COLORS, metric_card
 from src.agents.langgraph_rcm_chatbot import rcm_langgraph_app
 from src.core import ml_engine
 from src.core.data_loader import get_cpt_summary
-from config import DEFAULT_LLM, GROQ_MODEL
+from config import llm_provider_label, active_llm_model
 
 
 def page_rcm_ai_copilot():
     master, _, _ = shared_page_init()
 
     render_page_header(
-        "🧠 RCM AI Copilot (Groq + LangGraph)",
+        "🧠 RCM AI Copilot (LangGraph)",
         "Claim-level copilot for denial, coding mismatch, and fraud reasoning with explainable outputs."
     )
 
@@ -50,8 +50,8 @@ def page_rcm_ai_copilot():
 
     st.sidebar.markdown("### 🔍 Copilot Context")
     st.sidebar.caption(
-        f"LLM Provider: **{'Groq' if DEFAULT_LLM != 'ollama' else 'Ollama'}**  \n"
-        f"Model: **{GROQ_MODEL if DEFAULT_LLM != 'ollama' else 'local-ollama'}**"
+        f"LLM Provider: **{llm_provider_label()}**  \n"
+        f"Model: **{active_llm_model()}**"
     )
     claim_id = st.sidebar.number_input("Focus Claim ID", min_value=1, step=1, value=int(master["claim_id"].iloc[0]))
 

@@ -1,13 +1,42 @@
 """
-langgraph_rcm_chatbot.py — LangGraph + Groq conversational RCM copilot.
+langgraph_rcm_chatbot.py — LangGraph conversational RCM copilot.
+
+Supports OpenAI (default), Groq, and Ollama via DEFAULT_LLM in config/.env.
 """
 
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.graph import END, START, StateGraph
-from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
-from config import SCRUB_RECOMMENDATION_HIGH_RISK, SCRUB_RECOMMENDATION_STANDARD, GROQ_API_KEY, GROQ_MODEL, OLLAMA_MODEL, DEFAULT_LLM
+from config import (
+    SCRUB_RECOMMENDATION_HIGH_RISK,
+    SCRUB_RECOMMENDATION_STANDARD,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
+    GROQ_API_KEY,
+    GROQ_MODEL,
+    OLLAMA_MODEL,
+    DEFAULT_LLM,
+)
+
+
+def _build_chat_llm():
+    """Return a LangChain chat model for the configured provider."""
+    if DEFAULT_LLM == "ollama":
+        from langchain_ollama import ChatOllama
+        return ChatOllama(model=OLLAMA_MODEL)
+
+    if DEFAULT_LLM == "groq":
+        from langchain_groq import ChatGroq
+        if not GROQ_API_KEY:
+            raise RuntimeError("GROQ_API_KEY missing. Set it in .env to enable chatbot responses.")
+        return ChatGroq(api_key=GROQ_API_KEY, model=GROQ_MODEL)
+
+    # Default / openai
+    from langchain_openai import ChatOpenAI
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY missing. Set it in .env to enable chatbot responses.")
+    return ChatOpenAI(api_key=OPENAI_API_KEY, model=OPENAI_MODEL)
 
 class ChatState(TypedDict, total=False):
     claim_id: int
@@ -78,15 +107,7 @@ def _generate_response_node(state: ChatState) -> Dict[str, Any]:
     """
 
     try:
-        # Groq-first for demo consistency. Ollama is only used when explicitly requested.
-        if DEFAULT_LLM == "ollama":
-            from langchain_ollama import ChatOllama
-            llm = ChatOllama(model=OLLAMA_MODEL)
-        else:
-            if not GROQ_API_KEY:
-                raise RuntimeError("GROQ_API_KEY missing. Set it in .env to enable chatbot responses.")
-            llm = ChatGroq(api_key=GROQ_API_KEY, model=GROQ_MODEL)
-
+        llm = _build_chat_llm()
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"Context: {context}\nUser: {state.get('user_message')}")

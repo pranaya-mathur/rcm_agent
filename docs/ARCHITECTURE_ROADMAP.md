@@ -2,6 +2,8 @@
 
 This document outlines the strategic evolution of the RCM Prototype from a local demonstration into a production-grade, cloud-native platform.
 
+**Current prototype baseline:** Streamlit + local XGBoost/IsolationForest models under `src/core/models/`, rule-based `CoordinatorAgent` stages, and LangGraph copilot with **OpenAI as the default LLM** (`DEFAULT_LLM=openai`; Groq/Ollama optional). See the root [README.md](../README.md) for how to run the demo today.
+
 ## Future State Architecture
 
 The following diagram illustrates the integration of **FHIR** for data standardization and **AWS** for scalable, secure processing.

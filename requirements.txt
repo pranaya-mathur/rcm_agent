@@ -10,5 +10,6 @@ langgraph
 langchain
 langchain-community
 python-dotenv
+langchain-openai
 langchain-groq
 langchain-ollama

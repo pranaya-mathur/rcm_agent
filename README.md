@@ -1,6 +1,6 @@
 # AI-Powered Smart RCM Prototype
 
-AI-powered Revenue Cycle Management prototype with Streamlit dashboard, ML models, agentic claim orchestration, Groq-powered RCM AI Copilot (LangGraph), and a React demo UI.
+AI-powered Revenue Cycle Management prototype with a Streamlit dashboard, ML models, agentic claim orchestration, an OpenAI-powered RCM AI Copilot (LangGraph; Groq/Ollama optional), and a React demo UI.
 
 ## What Is Implemented
 
@@ -10,30 +10,39 @@ AI-powered Revenue Cycle Management prototype with Streamlit dashboard, ML model
 - Fraud enhancement (supervised risk + `IsolationForest` anomaly blending)
 - Patient access and eligibility risk scoring
 - Payment reconciliation risk scoring
-- Revenue trend forecasting and what-if style exploration
-- Agentic workflow (`CoordinatorAgent` + specialized agents)
-- Groq-powered claim-level RCM AI Copilot in Streamlit (LangGraph orchestration)
-- 2-page narrative summary generation via Groq or Ollama
+- Revenue trend forecasting
+- Agentic workflow (`CoordinatorAgent` + Front-End / Mid-Cycle / Back-End agents)
+- Claim-level RCM AI Copilot in Streamlit (LangGraph + OpenAI by default)
+- 2-page narrative summary helpers (OpenAI / Groq / Ollama)
 - Lightweight Python backend API + React (no-build CDN) UI
 
 ---
 
 ## Repository Components
 
-- `app.py` - Main Streamlit dashboard
-- `ml_engine.py` - Model train/load/score pipeline
-- `data_loader.py` - CSV loading + feature preparation
-- `rcm_agent.py` - Coordinator and specialist agents
-- `front_end_agent.py` - Stage 1 patient access and eligibility orchestration
-- `mid_cycle_agent.py` - Stage 2 coding/documentation validation orchestration
-- `back_end_agent.py` - Stage 3 denial/appeals/fraud/reconciliation orchestration
-- `langgraph_rcm_chatbot.py` - LangGraph + Groq claim copilot flow
-- `custom_coding_agent.py` - CPT/ICD coding recommendation logic
-- `clinical_nlp_agent.py` - Clinical note to ICD prediction support
-- `groq_agent_summary.py` - Groq-based 2-page summary generation
-- `ollama_agent_summary.py` - Ollama-based 2-page summary generation
-- `backend_api.py` - API for React dashboard
-- `frontend/` - React dashboard prototype (served as static files)
+| Path | Role |
+|---|---|
+| `app.py` | Main Streamlit Command Center |
+| `pages/` | Multipage Streamlit dashboards |
+| `utils_ui.py` / `style.css` / `config.py` | Shared UI helpers, theme, LLM config |
+| `src/core/data_loader.py` | CSV loading, live-DB merge, feature prep |
+| `src/core/demo_db.py` | SQLite persistence for live demo claims |
+| `src/core/ml_engine.py` | Model train / load / score pipeline |
+| `src/core/data/` | Historical synthetic CSV datasets |
+| `src/core/models/` | Trained `.joblib` artifacts (created on train) |
+| `src/agents/rcm_agent.py` | `CoordinatorAgent` + legacy specialist agents |
+| `src/agents/front_end_agent.py` | Stage 1 patient access / eligibility / scrubbing |
+| `src/agents/mid_cycle_agent.py` | Stage 2 coding / documentation validation |
+| `src/agents/back_end_agent.py` | Stage 3 denials / appeals / fraud / reconciliation |
+| `src/agents/langgraph_rcm_chatbot.py` | LangGraph RCM AI Copilot (OpenAI / Groq / Ollama) |
+| `src/agents/custom_coding_agent.py` | CPT → ICD coding recommendations |
+| `src/agents/clinical_nlp_agent.py` | Clinical note → ICD prediction |
+| `src/agents/openai_agent_summary.py` | OpenAI 2-page summary generation |
+| `src/agents/groq_agent_summary.py` | Groq 2-page summary generation |
+| `src/agents/ollama_agent_summary.py` | Ollama 2-page summary generation |
+| `src/api/backend_api.py` | JSON API for the React dashboard |
+| `frontend/` | React dashboard prototype (CDN, no build step) |
+| `docs/ARCHITECTURE_ROADMAP.md` | Future cloud / FHIR / AWS roadmap |
 
 ---
 
@@ -56,7 +65,7 @@ flowchart LR
     F2[src/agents/mid_cycle_agent.py] --> F
     F3[src/agents/back_end_agent.py] --> F
     G[src/agents/langgraph_rcm_chatbot.py<br/>RCM AI Copilot] --> E
-    H[src/agents/groq_agent_summary.py / ollama_agent_summary.py] --> E
+    H[openai / groq / ollama summary helpers] --> E
 
     B --> I[src/api/backend_api.py]
     C --> I
@@ -112,16 +121,12 @@ flowchart TD
     D -- no --> C
 ```
 
-## Three-Stage PDF Alignment
+## Three-Stage Alignment
 
-- **Stage 1: Front-End Automation (`front_end_agent.py`)**
-  - Eligibility/auth readiness and pre-submission scrubbing actions.
-- **Stage 2: Mid-Cycle (`mid_cycle_agent.py`)**
-  - CPT/ICD + NLP coding validation and coding-review triggers.
-- **Stage 3: Back-End Efficiency (`back_end_agent.py`)**
-  - Appeals prioritization/letter draft, fraud control, and reconciliation actions.
-- **Coordinator (`rcm_agent.py`)**
-  - Sequential stage handoffs: Front-End -> Mid-Cycle -> Back-End -> final action plan.
+- **Stage 1: Front-End Automation** (`front_end_agent.py`) — eligibility / auth readiness and pre-submission scrubbing
+- **Stage 2: Mid-Cycle** (`mid_cycle_agent.py`) — CPT/ICD + NLP coding validation
+- **Stage 3: Back-End Efficiency** (`back_end_agent.py`) — appeals letter draft, fraud control, reconciliation
+- **Coordinator** (`rcm_agent.py`) — Front-End → Mid-Cycle → Back-End → supervisor approval
 
 ---
 
@@ -129,24 +134,21 @@ flowchart TD
 
 - RCM Command Center
 - Patient Access & Eligibility
+- Smart Scrubbing
+- AI Denial Predictor
 - Denial Intelligence
 - Appeals Analytics
-- Fraud Detection
-- Smart Scrubbing
 - Payment Reconciliation
+- AR Aging & Lifecycle
+- Fraud Detection
 - Revenue Forecasting
 - Monitoring & Alerts
-- AR Aging & Lifecycle
 - Agentic RCM Agent
-- RCM AI Copilot (Groq + LangGraph)
-- AI Denial Predictor
+- RCM AI Copilot (LangGraph + OpenAI)
 
-Sidebar is grouped by operational stage for demo flow:
-- Command
-- Front-End
-- Mid-Cycle
-- Back-End
-- Intelligence & Ops
+Sidebar is grouped by operational stage: Command → Front-End → Mid-Cycle → Back-End → Intelligence & Ops.
+
+**Suggested demo path:** Command Center → AI Denial Predictor → Fraud / Scrubbing → **RCM AI Copilot**.
 
 ---
 
@@ -154,26 +156,47 @@ Sidebar is grouped by operational stage for demo flow:
 
 ### 1) Create environment and install dependencies
 
+Python **3.10+** recommended (pinned `numpy==2.2.4`).
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2) Configure optional environment variables
+If `venv/bin/streamlit` has a broken shebang (copied venv), always use:
 
-Create or update `.env` in project root:
+```bash
+./venv/bin/python -m streamlit run app.py
+```
+
+### 2) Configure environment variables
+
+Copy the example file and add your key:
+
+```bash
+cp .env.example .env
+```
+
+`.env` contents:
 
 ```env
+# OpenAI (default provider)
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+DEFAULT_LLM=openai
+
 # Groq (optional)
-GROQ_API_KEY=""
+GROQ_API_KEY=
 GROQ_MODEL=llama-3.3-70b-versatile
 
 # Ollama (optional)
 OLLAMA_MODEL=llama3:8b
 ```
 
-`app.py` loads this automatically using `python-dotenv`.
+`config.py` loads this via `python-dotenv`. Supported `DEFAULT_LLM` values: `openai`, `groq`, `ollama`.
+
+Never commit `.env` (it is gitignored).
 
 ---
 
@@ -183,50 +206,59 @@ OLLAMA_MODEL=llama3:8b
 
 ```bash
 source venv/bin/activate
-streamlit run app.py
+./venv/bin/python -m streamlit run app.py
 ```
 
-Open the URL shown by Streamlit (usually `http://localhost:8501`).
+Open **http://127.0.0.1:8501** (prefer `127.0.0.1` over `localhost` if the page fails to load).
 
 ### Option B: React demo UI with backend API
 
-Run backend API:
-
 ```bash
+# Terminal 1 — API (from repo root)
 source venv/bin/activate
-python3 backend_api.py
-```
+./venv/bin/python -m src.api.backend_api
 
-In another terminal, serve frontend:
-
-```bash
+# Terminal 2 — static frontend
 cd frontend
 python3 -m http.server 8080
 ```
 
-Open `http://localhost:8080`.
+Open `http://localhost:8080`. Root `index.html` redirects to `frontend/index.html` if served from the project root.
 
-If you serve from project root, `index.html` redirects to `frontend/index.html`.
+### Option C: Docker
+
+```bash
+# Requires a .env file in the project root
+docker compose up --build
+```
+
+Serves Streamlit on port `8501`.
+
+---
+
+## Models
+
+- Artifacts are stored under **`src/core/models/`** (not the legacy root `models/` folder).
+- If a model file is missing, training runs automatically on first use (can take a few minutes on 50k claims).
+- To pre-train before a demo, open model-heavy pages once, or run a short training script that calls `ml_engine.train_*` / `fit_revenue_forecast_model`.
 
 ---
 
 ## API Endpoints
 
-From `backend_api.py`:
+From `src/api/backend_api.py` (base URL `http://localhost:8001`):
 
-- `GET /api/health`
-- `GET /api/summary`
-- `GET /api/agent/claim/<claim_id>`
-- `POST /api/score-claim`
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | Health check |
+| `GET` | `/api/summary` | Dashboard KPIs for React UI |
+| `GET` | `/api/agent/claim/<claim_id>` | Score claim + run Coordinator |
+| `POST` | `/api/score-claim` | Realtime single-claim inference |
 
-Base URL: `http://localhost:8001`
+### Realtime single-claim inference
 
-### Realtime single-claim inference (no CSV append needed)
-
-Use `POST /api/score-claim` to score a new incoming claim payload and run `CoordinatorAgent`.
-Add `"persist": true` in payload if you want the claim stored into demo SQLite and reflected in Streamlit/API datasets.
-
-Example:
+Use `POST /api/score-claim` to score a new claim and run `CoordinatorAgent`.
+Set `"persist": true` to store the claim in demo SQLite so it can appear in later dataset loads.
 
 ```bash
 curl -X POST "http://localhost:8001/api/score-claim" \
@@ -254,25 +286,29 @@ curl -X POST "http://localhost:8001/api/score-claim" \
   }'
 ```
 
+Note: after persisting via the API, restart Streamlit (or clear its cache) if the new claim does not appear immediately in the dashboard.
+
 ---
 
-## LLM Summary Generation
+## LLM / Copilot
 
-In Streamlit (`Agentic RCM Agent` page):
+RCM AI Copilot and Patient Access chat use `DEFAULT_LLM` (**default: OpenAI**).
 
-- **Groq summary**: requires `GROQ_API_KEY`
-- **Ollama summary**: requires local Ollama server running
+| Provider | Required setup |
+|---|---|
+| **OpenAI** (default) | `OPENAI_API_KEY`, optional `OPENAI_MODEL` (default `gpt-4o-mini`) |
+| **Groq** | `DEFAULT_LLM=groq` + `GROQ_API_KEY` |
+| **Ollama** | `DEFAULT_LLM=ollama` + local `ollama serve` |
 
-Example Ollama run command:
+Summary helpers:
 
-```bash
-ollama serve
-```
+- `src/agents/openai_agent_summary.py`
+- `src/agents/groq_agent_summary.py`
+- `src/agents/ollama_agent_summary.py`
 
 ---
 
 ## Notes
 
-- This is a prototype focused on demoability and extensibility.
-- Models are trained from local CSV data and persisted under `models/`.
-- If model files are missing, training is triggered automatically in relevant flows.
+- Prototype focused on demoability and extensibility; data is synthetic.
+- Future production direction (FHIR, AWS, Bedrock, SageMaker) is documented in [`docs/ARCHITECTURE_ROADMAP.md`](docs/ARCHITECTURE_ROADMAP.md).
