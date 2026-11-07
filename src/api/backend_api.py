@@ -21,14 +21,14 @@ from typing import Any, Dict, List
 import numpy as np
 
 from src.core.data_loader import build_master, clear_data_caches
-from src.core.demo_db import upsert_live_claim
+from src.core.demo_db import upsert_live_claim, db_signature
 from src.core import ml_engine
 from src.core.claim_scoring import (
     run_coordinator_for_claim,
     run_coordinator_for_payload,
     validate_claim_payload,
-    safe_float,
 )
+from src.core.value_coercion import coerce_bool, CoercionError
 
 
 # Localhost-only by default for demo safety. Override with RCM_API_HOST=0.0.0.0 if needed.
@@ -53,7 +53,7 @@ def _risk_label(p: float) -> str:
 
 
 def build_summary_payload() -> Dict[str, Any]:
-    master = build_master().reset_index(drop=True).copy()
+    master = build_master(db_sig=db_signature()).reset_index(drop=True).copy()
 
     denial_rate = float(master["is_denied"].mean() * 100)
     clean_claim_rate = float(master["is_clean_claim"].mean() * 100)
@@ -147,7 +147,10 @@ def build_agent_claim_payload(claim_id: int) -> Dict[str, Any]:
 
 
 def build_realtime_agent_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    force = bool(payload.get("force_appeal", False))
+    try:
+        force = coerce_bool(payload.get("force_appeal", False), field="force_appeal", default=False)
+    except CoercionError as e:
+        return {"ok": False, "error": "Invalid claim payload", "errors": [str(e)]}
     return run_coordinator_for_payload(payload, force_appeal=force, train_if_missing=True)
 
 
@@ -226,8 +229,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(json.dumps({"ok": False, "error": "JSON payload must be an object"}).encode("utf-8"))
                     return
 
-                persist = bool(payload.get("persist", False))
-                ok, errors = validate_claim_payload({k: v for k, v in payload.items() if k not in ("persist", "force_appeal")})
+                try:
+                    persist = coerce_bool(payload.get("persist", False), field="persist", default=False)
+                except CoercionError as e:
+                    self._set_headers(400)
+                    self.wfile.write(
+                        json.dumps({"ok": False, "error": "Invalid claim payload", "errors": [str(e)]}).encode("utf-8")
+                    )
+                    return
+                ok, errors = validate_claim_payload(payload)
                 if not ok:
                     self._set_headers(400)
                     self.wfile.write(json.dumps({"ok": False, "error": "Invalid claim payload", "errors": errors}).encode("utf-8"))

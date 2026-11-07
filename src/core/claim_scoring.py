@@ -15,6 +15,7 @@ import pandas as pd
 from src.core import ml_engine
 from src.core.data_loader import build_master, get_cpt_summary, load_all
 from src.core.demo_db import db_signature
+from src.core.value_coercion import coerce_bool, coerce_finite_number, try_coerce_bool, CoercionError
 from src.agents.custom_coding_agent import build_cpt_icd_knowledge, build_coding_recommendation
 from src.agents.clinical_nlp_agent import (
     train_notes_to_icd_model,
@@ -25,6 +26,16 @@ from src.agents.rcm_agent import CoordinatorAgent, AgentOutput
 
 
 REQUIRED_PAYLOAD_FIELDS = ("claim_id", "insurance", "visit_type", "icd_code", "gender", "age", "claim_amount")
+BOOL_PAYLOAD_FIELDS = (
+    "is_denied",
+    "is_appealed",
+    "appeal_success",
+    "cpt_icd_mismatch",
+    "high_amount_flag",
+    "strict_insurance_flag",
+    "persist",
+    "force_appeal",
+)
 
 
 def safe_float(v: Any, default: float = 0.0) -> float:
@@ -32,7 +43,7 @@ def safe_float(v: Any, default: float = 0.0) -> float:
         if v is None:
             return default
         f = float(v)
-        if np.isnan(f):
+        if np.isnan(f) or np.isinf(f):
             return default
         return f
     except Exception:
@@ -55,26 +66,26 @@ def validate_claim_payload(payload: Dict[str, Any]) -> Tuple[bool, List[str]]:
         except Exception:
             errors.append("claim_id must be an integer")
 
-    for num_field in ("age", "claim_amount", "paid_amount", "fraud_score", "total_cpt_amount", "num_cpt_codes"):
-        if num_field in payload and payload[num_field] is not None:
+    # Strict numeric checks (finite; non-negative financials).
+    for num_field, kwargs in (
+        ("claim_amount", {"allow_negative": False, "minimum": 0.0}),
+        ("paid_amount", {"allow_negative": False, "minimum": 0.0}),
+        ("fraud_score", {"allow_negative": False, "minimum": 0.0, "maximum": 1.0}),
+        ("total_cpt_amount", {"allow_negative": False, "minimum": 0.0}),
+        ("num_cpt_codes", {"allow_negative": False, "minimum": 0.0}),
+        ("age", {"allow_negative": False, "minimum": 0.0, "maximum": 120.0}),
+    ):
+        if num_field in payload and payload[num_field] is not None and payload[num_field] != "":
             try:
-                float(payload[num_field])
-            except Exception:
-                errors.append(f"{num_field} must be numeric")
+                coerce_finite_number(payload[num_field], field=num_field, **kwargs)
+            except CoercionError as e:
+                errors.append(str(e))
 
-    if "age" in payload and payload["age"] is not None:
-        try:
-            age = int(payload["age"])
-            if age < 0 or age > 120:
-                errors.append("age must be between 0 and 120")
-        except Exception:
-            pass
-
-    for bool_field in ("is_denied", "is_appealed", "appeal_success", "cpt_icd_mismatch", "high_amount_flag", "strict_insurance_flag"):
-        if bool_field in payload and payload[bool_field] is not None and not isinstance(payload[bool_field], bool):
-            # Allow 0/1
-            if payload[bool_field] not in (0, 1, "0", "1", "true", "false", "True", "False"):
-                errors.append(f"{bool_field} must be a boolean")
+    for bool_field in BOOL_PAYLOAD_FIELDS:
+        if bool_field in payload and payload[bool_field] is not None:
+            _, err = try_coerce_bool(payload[bool_field], field=bool_field)
+            if err:
+                errors.append(err)
 
     if "cpt_codes" in payload and payload["cpt_codes"] is not None:
         if not isinstance(payload["cpt_codes"], list):
@@ -82,7 +93,6 @@ def validate_claim_payload(payload: Dict[str, Any]) -> Tuple[bool, List[str]]:
 
     if "visit_type" in payload and payload["visit_type"] not in (None, ""):
         vt = str(payload["visit_type"]).upper()
-        # Accept common aliases; normalize later
         if vt not in ("OP", "OPD", "ER", "IP", "IPD", "INPATIENT", "OUTPATIENT"):
             errors.append("visit_type should be one of: OPD, ER, IPD (aliases OP/IP accepted)")
 
@@ -105,11 +115,16 @@ def derive_claim_fields(claim: Dict[str, Any]) -> Dict[str, Any]:
     out["revenue_leakage"] = amount - paid
     out["collection_rate"] = round((paid / amount * 100), 2) if amount > 0 else 0.0
     if "high_amount_flag" not in out or out.get("high_amount_flag") is None:
-        out["high_amount_flag"] = bool(amount > 1500)
+        out["high_amount_flag"] = amount > 1500
     for flag in ("cpt_icd_mismatch", "strict_insurance_flag", "high_amount_flag"):
-        out[flag] = bool(out.get(flag, False))
+        if isinstance(out.get(flag), bool):
+            continue
+        if out.get(flag) is None:
+            out[flag] = False
+        else:
+            out[flag] = coerce_bool(out.get(flag), field=flag, default=False)
     out["is_clean_claim"] = not any(
-        bool(out.get(f, False)) for f in ("cpt_icd_mismatch", "high_amount_flag", "strict_insurance_flag")
+        out.get(f, False) for f in ("cpt_icd_mismatch", "high_amount_flag", "strict_insurance_flag")
     )
     age = int(out.get("age", 0) or 0)
     if age <= 18:
@@ -131,7 +146,23 @@ def build_runtime_claim_row(payload: Dict[str, Any]) -> Dict[str, Any]:
     Build a model-compatible claim row from payload alone.
     Does NOT inherit unspecified attributes from an unrelated historical claim.
     """
-    claim_amount = safe_float(payload.get("claim_amount"), 0.0)
+    claim_amount = coerce_finite_number(payload.get("claim_amount"), field="claim_amount", allow_negative=False)
+    paid_amount = (
+        coerce_finite_number(payload.get("paid_amount"), field="paid_amount", allow_negative=False)
+        if payload.get("paid_amount") is not None
+        else 0.0
+    )
+    fraud_score = (
+        coerce_finite_number(payload.get("fraud_score"), field="fraud_score", allow_negative=False, minimum=0.0, maximum=1.0)
+        if payload.get("fraud_score") is not None
+        else 0.0
+    )
+    age = int(coerce_finite_number(payload.get("age"), field="age", allow_negative=False, minimum=0.0, maximum=120.0))
+
+    high_amount_flag = None
+    if "high_amount_flag" in payload and payload.get("high_amount_flag") is not None:
+        high_amount_flag = coerce_bool(payload.get("high_amount_flag"), field="high_amount_flag")
+
     claim = {
         "claim_id": int(payload["claim_id"]),
         "encounter_id": int(payload.get("encounter_id") or (900_000_000 + int(payload["claim_id"]))),
@@ -141,17 +172,19 @@ def build_runtime_claim_row(payload: Dict[str, Any]) -> Dict[str, Any]:
         "visit_type": normalize_visit_type(str(payload.get("visit_type", "OPD"))),
         "icd_code": str(payload.get("icd_code", "Unknown")),
         "gender": str(payload.get("gender", "U")),
-        "age": int(payload.get("age", 0) or 0),
+        "age": age,
         "claim_amount": claim_amount,
-        "paid_amount": safe_float(payload.get("paid_amount"), 0.0),
-        "fraud_score": safe_float(payload.get("fraud_score"), 0.0),
+        "paid_amount": paid_amount,
+        "fraud_score": fraud_score,
         "denial_reason": str(payload.get("denial_reason", "None") or "None"),
-        "is_denied": bool(payload.get("is_denied", False)),
-        "is_appealed": bool(payload.get("is_appealed", False)),
-        "appeal_success": bool(payload.get("appeal_success", False)),
-        "cpt_icd_mismatch": bool(payload.get("cpt_icd_mismatch", False)),
-        "high_amount_flag": bool(payload.get("high_amount_flag")) if "high_amount_flag" in payload else None,
-        "strict_insurance_flag": bool(payload.get("strict_insurance_flag", False)),
+        "is_denied": coerce_bool(payload.get("is_denied", False), field="is_denied", default=False),
+        "is_appealed": coerce_bool(payload.get("is_appealed", False), field="is_appealed", default=False),
+        "appeal_success": coerce_bool(payload.get("appeal_success", False), field="appeal_success", default=False),
+        "cpt_icd_mismatch": coerce_bool(payload.get("cpt_icd_mismatch", False), field="cpt_icd_mismatch", default=False),
+        "high_amount_flag": high_amount_flag,
+        "strict_insurance_flag": coerce_bool(
+            payload.get("strict_insurance_flag", False), field="strict_insurance_flag", default=False
+        ),
         "clinical_notes": str(payload.get("clinical_notes", "") or ""),
     }
     return derive_claim_fields(claim)
@@ -215,16 +248,32 @@ def get_or_train_models(
     master: Optional[pd.DataFrame] = None,
     cpt_summary: Optional[pd.DataFrame] = None,
     train_if_missing: bool = True,
+    db_sig: Optional[float] = None,
 ) -> ModelBundle:
     """Load models from src/core/models; optionally train missing ones once."""
     global _MODEL_BUNDLE
+    sig = db_sig if db_sig is not None else db_signature()
+
+    # Reuse loaded ML artifacts across calls, but refresh data-dependent coding/NLP
+    # knowledge when the live DB signature changes.
     if _MODEL_BUNDLE is not None and _MODEL_BUNDLE.ready:
+        if _MODEL_BUNDLE.artifacts.get("db_sig") == sig:
+            return _MODEL_BUNDLE
+        # Keep model weights; refresh knowledge tables against current live+historical data.
+        raw = load_all(db_sig=sig)
+        _MODEL_BUNDLE.artifacts["coding_knowledge"] = build_cpt_icd_knowledge(
+            raw["cpt_lines"], raw["icd"], raw["claims"]
+        )
+        _MODEL_BUNDLE.artifacts["nlp_bundle"] = train_notes_to_icd_model(
+            raw["encounters"], raw["claims"], raw["icd"], min_samples=50
+        )
+        _MODEL_BUNDLE.artifacts["db_sig"] = sig
         return _MODEL_BUNDLE
 
     if master is None:
-        master = build_master()
+        master = build_master(db_sig=sig)
     if cpt_summary is None:
-        cpt_summary = get_cpt_summary()
+        cpt_summary = get_cpt_summary(db_sig=sig)
 
     def _load_or_train(load_fn, train_fn, *train_args, meta_key: str = "meta"):
         model, meta = load_fn()
@@ -257,6 +306,19 @@ def get_or_train_models(
     fraud_anomaly_model, fraud_anomaly_meta = _load_or_train(
         ml_engine.load_fraud_anomaly_model, ml_engine.train_fraud_anomaly_model, master
     )
+    # Ensure legacy anomaly artifacts get training reference stats when missing.
+    if (
+        fraud_anomaly_model is not None
+        and isinstance(fraud_anomaly_meta, dict)
+        and (
+            "anomaly_strength_ref_min" not in fraud_anomaly_meta
+            or "anomaly_strength_ref_max" not in fraud_anomaly_meta
+        )
+        and train_if_missing
+    ):
+        refreshed = ml_engine.train_fraud_anomaly_model(master)
+        fraud_anomaly_model, fraud_anomaly_meta = refreshed["model"], refreshed["meta"]
+
     recon_model, recon_meta = _load_or_train(
         ml_engine.load_reconciliation_risk_model, ml_engine.train_reconciliation_risk_model, master
     )
@@ -264,7 +326,7 @@ def get_or_train_models(
         ml_engine.load_eligibility_risk_model, ml_engine.train_eligibility_risk_model, master
     )
 
-    raw = load_all(db_sig=db_signature())
+    raw = load_all(db_sig=sig)
     coding_knowledge = build_cpt_icd_knowledge(raw["cpt_lines"], raw["icd"], raw["claims"])
     nlp_bundle = train_notes_to_icd_model(raw["encounters"], raw["claims"], raw["icd"], min_samples=50)
 
@@ -287,7 +349,7 @@ def get_or_train_models(
         "elig_meta": elig_meta,
         "coding_knowledge": coding_knowledge,
         "nlp_bundle": nlp_bundle,
-        "db_sig": db_signature(),
+        "db_sig": sig,
     }
     _MODEL_BUNDLE = ModelBundle(artifacts)
     return _MODEL_BUNDLE
@@ -339,11 +401,15 @@ def score_claim_dict(
         alpha=0.6,
     )
     fraud_p = float(fraud_df.iloc[0]["fraud_probability_improved"])
+    fraud_anomaly_p = float(fraud_df.iloc[0].get("fraud_anomaly_probability", 0.0))
 
     recon_probs = ml_engine.score_reconciliation_risk(
         claim_df, a["recon_model"], a["recon_meta"]["feature_cols"]
     )
     recon_p = float(recon_probs[0]) if len(recon_probs) else 0.0
+    recon_leakage_note = None
+    if isinstance(a.get("recon_meta"), dict):
+        recon_leakage_note = (a["recon_meta"].get("metrics") or {}).get("target_leakage_warning")
 
     # Appeals scores: compute always for metrics, but agents gate on denial status.
     ranked = ml_engine.predict_appeals_ranked_candidates(
@@ -356,6 +422,9 @@ def score_claim_dict(
     )
     p_appeal_success = safe_float(ranked.iloc[0]["p_appeal_success"], 0.0) if len(ranked) else 0.0
     expected_recovery = safe_float(ranked.iloc[0]["expected_recovery"], 0.0) if len(ranked) else 0.0
+    paid_if_success = (
+        safe_float(ranked.iloc[0].get("predicted_paid_if_appeal_succeeds"), 0.0) if len(ranked) else 0.0
+    )
 
     codes = cpt_codes or [x.strip() for x in str(cpt_row.get("cpt_codes_list", "")).split(",") if x.strip()]
     coding_reco = build_coding_recommendation(
@@ -379,11 +448,19 @@ def score_claim_dict(
         ),
         "mismatch_probability": mismatch_p,
         "fraud_probability_improved": fraud_p,
+        "fraud_anomaly_probability": fraud_anomaly_p,
         "reconciliation_risk_probability": recon_p,
+        "reconciliation_leakage_note": recon_leakage_note,
         "p_appeal_success": p_appeal_success,
+        "predicted_paid_if_appeal_succeeds": paid_if_success,
         "expected_recovery": expected_recovery,
+        "expected_recovery_definition": (
+            "P(appeal_success) * predicted_paid_amount_if_appeal_succeeds "
+            "(experimental; not denied balance / AR owed)"
+        ),
         "appeals_estimate_note": (
-            "Experimental / synthetic-data estimate only — not an externally validated appeal success rate."
+            "Experimental / synthetic-data estimate only — not an externally validated appeal success rate. "
+            "expected_recovery is expected value under the appeal path, not the claim balance."
         ),
         "coding_recommendation": coding_reco,
         "nlp_coding_recommendation": nlp_coding_reco,
@@ -392,12 +469,13 @@ def score_claim_dict(
 
 def score_existing_claim(claim_id: int, train_if_missing: bool = True) -> Dict[str, Any]:
     """Score a claim already present in master (historical or live-merged)."""
-    master = build_master().reset_index(drop=True)
-    cpt_summary = get_cpt_summary().reset_index(drop=True)
+    sig = db_signature()
+    master = build_master(db_sig=sig).reset_index(drop=True)
+    cpt_summary = get_cpt_summary(db_sig=sig).reset_index(drop=True)
     if claim_id not in set(master["claim_id"].astype(int).tolist()):
-        return {"ok": False, "error": f"Claim ID {claim_id} not found"}
+        return {"ok": False, "error": f"Claim ID {claim_id} not found", "db_sig": sig}
 
-    bundle = get_or_train_models(master, cpt_summary, train_if_missing=train_if_missing)
+    bundle = get_or_train_models(master, cpt_summary, train_if_missing=train_if_missing, db_sig=sig)
     if not bundle.ready:
         return {"ok": False, "error": "Models are not available. Train models before scoring."}
 
@@ -462,9 +540,10 @@ def run_coordinator_for_payload(
     if not ok:
         return {"ok": False, "error": "Invalid claim payload", "errors": errors}
 
-    master = build_master()
-    cpt_summary = get_cpt_summary()
-    bundle = get_or_train_models(master, cpt_summary, train_if_missing=train_if_missing)
+    sig = db_signature()
+    master = build_master(db_sig=sig)
+    cpt_summary = get_cpt_summary(db_sig=sig)
+    bundle = get_or_train_models(master, cpt_summary, train_if_missing=train_if_missing, db_sig=sig)
     if not bundle.ready:
         return {"ok": False, "error": "Models are not available. Train models before scoring."}
 

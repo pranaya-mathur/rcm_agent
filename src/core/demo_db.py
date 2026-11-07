@@ -11,6 +11,8 @@ from typing import Any, Dict
 
 import pandas as pd
 
+from src.core.value_coercion import coerce_bool
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "demo_live.sqlite3")
 
 
@@ -81,6 +83,8 @@ def upsert_live_claim(payload: Dict[str, Any]) -> None:
     high_amount = payload.get("high_amount_flag")
     if high_amount is None:
         high_amount = claim_amount > 1500
+    else:
+        high_amount = coerce_bool(high_amount, field="high_amount_flag", default=False)
 
     row = (
         claim_id,
@@ -95,12 +99,12 @@ def upsert_live_claim(payload: Dict[str, Any]) -> None:
         float(payload.get("paid_amount", 0.0) or 0.0),
         float(payload.get("fraud_score", 0.0) or 0.0),
         str(payload.get("denial_reason", "None")),
-        int(bool(payload.get("is_denied", False))),
-        int(bool(payload.get("is_appealed", False))),
-        int(bool(payload.get("appeal_success", False))),
-        int(bool(payload.get("cpt_icd_mismatch", False))),
+        int(coerce_bool(payload.get("is_denied", False), field="is_denied", default=False)),
+        int(coerce_bool(payload.get("is_appealed", False), field="is_appealed", default=False)),
+        int(coerce_bool(payload.get("appeal_success", False), field="appeal_success", default=False)),
+        int(coerce_bool(payload.get("cpt_icd_mismatch", False), field="cpt_icd_mismatch", default=False)),
         int(bool(high_amount)),
-        int(bool(payload.get("strict_insurance_flag", False))),
+        int(coerce_bool(payload.get("strict_insurance_flag", False), field="strict_insurance_flag", default=False)),
         cpt_codes_json,
         float(payload.get("total_cpt_amount", claim_amount) or claim_amount),
         str(payload.get("clinical_notes", "") or ""),

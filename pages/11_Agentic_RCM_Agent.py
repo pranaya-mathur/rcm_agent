@@ -43,9 +43,13 @@ def page_agentic_rcm_agent():
 
     claim_id = st.sidebar.number_input("Target Claim ID", min_value=1, step=1, value=default_id)
     force_appeal = st.sidebar.checkbox(
-        "Manual demo override: force appeal draft",
+        "Manual demo override: force appeal draft (denied+open claims only)",
         value=False,
-        help="Authorized demo workflow only. Still requires human review; does not submit to payers.",
+        help=(
+            "Unauthenticated demo switch — bypasses the model success gate only for denied, "
+            "not-yet-appealed claims. Cannot draft for non-denied or resolved claims. "
+            "Still requires human review; does not submit to payers."
+        ),
     )
 
     if claim_id not in set(master["claim_id"].astype(int).tolist()):

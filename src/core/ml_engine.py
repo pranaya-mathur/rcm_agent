@@ -622,13 +622,20 @@ def predict_appeals_ranked_candidates(master_df: pd.DataFrame, cpt_summary_df: p
     X_r = X.reindex(columns=recovery_feature_cols, fill_value=0)
 
     p_success = success_model.predict_proba(X_s)[:, 1]
-    paid_given_success = recovery_model.predict(X_r)
+    # Predicted paid amount conditional on a successful appeal — not AR balance / amount owed.
+    paid_given_success = np.clip(recovery_model.predict(X_r), a_min=0.0, a_max=None)
+    # E[recovery | appeal path] ≈ P(success) × E[paid | success]
     expected_recovery = p_success * paid_given_success
 
     out = master_df.copy()
     out = out.reset_index(drop=True)
     out["p_appeal_success"] = p_success
+    out["predicted_paid_if_appeal_succeeds"] = paid_given_success
     out["expected_recovery"] = expected_recovery
+    out["expected_recovery_definition"] = (
+        "P(appeal_success) * predicted_paid_amount_if_appeal_succeeds "
+        "(experimental synthetic-data estimate; not denied balance or guaranteed recovery)"
+    )
     return out
 
 
@@ -727,6 +734,9 @@ def load_fraud_probability_model():
 def train_fraud_anomaly_model(master_df: pd.DataFrame):
     """
     Fit an IsolationForest over numeric "weirdness" features (unsupervised anomaly).
+
+    Stores training-set anomaly_strength reference range so single-claim and
+    portfolio scoring share a stable normalization (batch min-max is unstable for n=1).
     """
     os.makedirs(MODEL_DIR, exist_ok=True)
     df = master_df.copy()
@@ -744,15 +754,52 @@ def train_fraud_anomaly_model(master_df: pd.DataFrame):
     )
     model.fit(X_num)
 
+    # Training reference for stable anomaly_strength -> [0,1] mapping.
+    train_strength = -model.decision_function(X_num)
+    # Use robust percentiles to avoid outlier-dominated range.
+    ref_min = float(np.percentile(train_strength, 1))
+    ref_max = float(np.percentile(train_strength, 99))
+    if ref_max - ref_min < 1e-12:
+        ref_min = float(np.min(train_strength))
+        ref_max = float(np.max(train_strength))
+    if ref_max - ref_min < 1e-12:
+        ref_max = ref_min + 1.0
+
+    meta = {
+        "numeric_cols": FRAUD_NUMERIC_ANOMALY_COLS,
+        "anomaly_strength_ref_min": ref_min,
+        "anomaly_strength_ref_max": ref_max,
+        "normalization": "training_percentile_1_99",
+    }
     joblib.dump(model, FRAUD_ANOMALY_MODEL_PATH)
-    joblib.dump({"numeric_cols": FRAUD_NUMERIC_ANOMALY_COLS}, FRAUD_ANOMALY_META_PATH)
-    return {"model": model, "meta": {"numeric_cols": FRAUD_NUMERIC_ANOMALY_COLS}}
+    joblib.dump(meta, FRAUD_ANOMALY_META_PATH)
+    return {"model": model, "meta": meta}
 
 
 def load_fraud_anomaly_model():
     if os.path.exists(FRAUD_ANOMALY_MODEL_PATH) and os.path.exists(FRAUD_ANOMALY_META_PATH):
         return joblib.load(FRAUD_ANOMALY_MODEL_PATH), joblib.load(FRAUD_ANOMALY_META_PATH)
     return None, None
+
+
+def _normalize_anomaly_strength(anomaly_strength: np.ndarray, fraud_anomaly_meta: dict) -> np.ndarray:
+    """
+    Map IsolationForest anomaly_strength to [0, 1] using training reference range
+    when available. Falls back to current-batch min-max only if meta lacks refs
+    (legacy artifacts) and the batch has more than one distinct value.
+    """
+    strength = np.asarray(anomaly_strength, dtype=float)
+    ref_min = fraud_anomaly_meta.get("anomaly_strength_ref_min")
+    ref_max = fraud_anomaly_meta.get("anomaly_strength_ref_max")
+    if ref_min is not None and ref_max is not None and float(ref_max) - float(ref_min) >= 1e-12:
+        p = (strength - float(ref_min)) / (float(ref_max) - float(ref_min))
+        return np.clip(p, 0.0, 1.0)
+
+    # Legacy fallback: batch min-max (degenerate for n=1 → zeros).
+    a_min, a_max = float(np.min(strength)), float(np.max(strength))
+    if a_max - a_min < 1e-12:
+        return np.zeros_like(strength, dtype=float)
+    return (strength - a_min) / (a_max - a_min)
 
 
 def score_fraud_enhanced(master_df: pd.DataFrame, cpt_summary_df: pd.DataFrame,
@@ -764,7 +811,6 @@ def score_fraud_enhanced(master_df: pd.DataFrame, cpt_summary_df: pd.DataFrame,
     X = X.reindex(columns=fraud_prob_feature_cols, fill_value=0)
     p_fraud = fraud_prob_model.predict_proba(X)[:, 1]
 
-    # Anomaly score -> probability-like scaling (min-max over scored set).
     cols = fraud_anomaly_meta.get("numeric_cols", FRAUD_NUMERIC_ANOMALY_COLS)
     df = master_df.copy()
     for col in cols:
@@ -773,17 +819,14 @@ def score_fraud_enhanced(master_df: pd.DataFrame, cpt_summary_df: pd.DataFrame,
     X_num = df[cols].fillna(0).astype(float).values
     # More anomalous => larger `anomaly_strength`
     anomaly_strength = -fraud_anomaly_model.decision_function(X_num)
-    a_min, a_max = float(np.min(anomaly_strength)), float(np.max(anomaly_strength))
-    if a_max - a_min < 1e-12:
-        p_anomaly = np.zeros_like(anomaly_strength, dtype=float)
-    else:
-        p_anomaly = (anomaly_strength - a_min) / (a_max - a_min)
+    p_anomaly = _normalize_anomaly_strength(anomaly_strength, fraud_anomaly_meta or {})
 
     improved = alpha * p_fraud + (1 - alpha) * p_anomaly
     out = master_df.copy().reset_index(drop=True)
     out["fraud_probability"] = p_fraud
     out["fraud_anomaly_probability"] = p_anomaly
     out["fraud_probability_improved"] = improved
+    out["fraud_anomaly_strength"] = anomaly_strength
     return out
 
 
@@ -940,6 +983,12 @@ def train_reconciliation_risk_model(master_df: pd.DataFrame):
     """
     Predict whether a claim likely needs reconciliation review.
     Proxy target: posting_gap > dynamic threshold.
+
+    KNOWN LIMITATION (target leakage): feature set includes `paid_amount`,
+    `revenue_leakage` (= claim_amount - paid_amount), and `collection_rate`,
+    while the label is derived from posting_gap (= claim_amount - paid_amount).
+    Scores remain useful as a demo routing signal but are NOT leakage-free
+    production estimates. Do not present recon AUC as externally validated.
     """
     os.makedirs(MODEL_DIR, exist_ok=True)
     df = master_df.copy()
@@ -951,11 +1000,20 @@ def train_reconciliation_risk_model(master_df: pd.DataFrame):
     y = (df["posting_gap"] > thresh).astype(int).values
 
     X, feature_cols = _build_recon_feature_df(df)
+    leakage_note = (
+        "Target leakage: features include paid_amount/revenue_leakage/collection_rate "
+        "while label is derived from posting_gap = claim_amount - paid_amount."
+    )
 
     if len(np.unique(y)) < 2:
         model = ConstantProbabilityModel(float(np.mean(y)))
         all_probs = model.predict_proba(X)[:, 1]
-        metrics = {"auc": None, "note": "Single-class labels; constant fallback.", "gap_threshold": thresh}
+        metrics = {
+            "auc": None,
+            "note": "Single-class labels; constant fallback.",
+            "gap_threshold": thresh,
+            "target_leakage_warning": leakage_note,
+        }
         joblib.dump(model, RECON_MODEL_PATH)
         joblib.dump({"feature_cols": feature_cols, "metrics": metrics, "all_probabilities": all_probs}, RECON_META_PATH)
         return {"model": model, "meta": {"feature_cols": feature_cols, "metrics": metrics, "all_probabilities": all_probs}}
@@ -986,6 +1044,7 @@ def train_reconciliation_risk_model(master_df: pd.DataFrame):
         "f1": f1_score(y_test, y_pred, zero_division=0),
         "accuracy": accuracy_score(y_test, y_pred),
         "gap_threshold": thresh,
+        "target_leakage_warning": leakage_note,
     }
     all_probs = model.predict_proba(X)[:, 1]
     joblib.dump(model, RECON_MODEL_PATH)

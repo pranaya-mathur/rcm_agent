@@ -44,9 +44,11 @@ class BackEndAgent:
             f"4. [PENDING] Supporting attachments — none generated or attached by this prototype.\n\n"
             f"Experimental model estimates (synthetic-data prototype only; not externally validated):\n"
             f"- Predicted appeal success probability: {p_appeal_success:.1%}\n"
-            f"- Estimated recovery if successful: ${expected_recovery:,.2f}\n\n"
-            f"This draft must be reviewed and approved by an authorized human reviewer before any payer submission.\n"
-            f"This system does not submit appeals or fabricate supporting documents.\n\n"
+            f"- Expected recovery if appeal succeeds "
+            f"(P(success)×predicted paid | success; NOT denied balance): ${expected_recovery:,.2f}\n\n"
+            f"This draft must be reviewed by a human reviewer before any payer submission.\n"
+            f"This system has no access-control / authorization layer and does not submit appeals "
+            f"or fabricate supporting documents.\n\n"
             f"Sincerely,\nRevenue Cycle Management Team (Draft Generator)"
         )
 
@@ -59,25 +61,46 @@ class BackEndAgent:
         is_denied = bool(claim.get("is_denied", False))
         is_appealed = bool(claim.get("is_appealed", False))
         appeal_success = bool(claim.get("appeal_success", False))
-        already_resolved = is_appealed and appeal_success
+        already_resolved = bool(is_appealed and appeal_success)
 
         model_gate = p_appeal_success >= 0.55 and expected_recovery > 0
-        # Never draft an appeal for a non-denied claim unless explicitly forced in a labeled demo override.
         appealable = False
         override_note = None
-        if already_resolved and not force_appeal:
+        override_rejected = False
+
+        # Hard eligibility: never draft for non-denied or already-resolved claims,
+        # even when force_appeal is set. force_appeal only bypasses the model gate
+        # for denied, not-yet-appealed claims. There is no access-control in this demo.
+        if not is_denied:
             appealable = False
-        elif not is_denied and not force_appeal:
+            if force_appeal:
+                override_rejected = True
+                override_note = (
+                    "Manual override rejected: claim is not denied. "
+                    "force_appeal cannot create drafts for non-denied claims."
+                )
+        elif already_resolved:
             appealable = False
-        elif is_denied and is_appealed and not force_appeal:
+            if force_appeal:
+                override_rejected = True
+                override_note = (
+                    "Manual override rejected: claim is already resolved (appealed + success). "
+                    "force_appeal cannot recreate drafts for resolved claims."
+                )
+        elif is_appealed:
             appealable = False
+            if force_appeal:
+                override_rejected = True
+                override_note = (
+                    "Manual override rejected: claim is already in appealed state."
+                )
         elif is_denied and not is_appealed and model_gate:
             appealable = True
-        elif force_appeal:
+        elif is_denied and not is_appealed and force_appeal:
             appealable = True
             override_note = (
-                "Manual demo override: appeal draft forced by authorized operator. "
-                "Still requires documented human review before any external submission."
+                "Manual demo override: draft forced despite low experimental success estimate. "
+                "This is an unauthenticated demo switch — no access-control enforcement exists."
             )
 
         high_fraud = fraud_probability_improved >= 0.7
@@ -88,36 +111,46 @@ class BackEndAgent:
 
         if appealable:
             actions.append("Prepare DRAFT appeal letter for human review (no auto-submission)")
-            actions.append("HUMAN APPROVAL REQUIRED before any payer submission — approval is not persisted by this demo")
+            actions.append(
+                "HUMAN REVIEW REQUIRED before any payer submission — approval is not persisted by this demo"
+            )
             appeal_letter = self._build_appeal_draft(claim, p_appeal_success, expected_recovery)
             if override_note:
                 actions.append(override_note)
-            elif not model_gate:
-                actions.append("Note: Draft created despite low experimental success estimate (override path)")
             actions.append(
-                "Label: appeal success / expected recovery figures are experimental synthetic-data estimates only"
+                "Label: expected_recovery = P(success)×predicted_paid_if_success "
+                "(experimental synthetic-data estimate; not claim balance)"
             )
-        elif not is_denied:
-            actions.append("No appeal draft: claim is not marked denied")
-        elif already_resolved:
-            actions.append("No appeal draft: claim already marked appealed/successful")
-        elif is_appealed:
-            actions.append("No new appeal draft: claim already in appealed state")
+        else:
+            if override_note:
+                actions.append(override_note)
+            elif not is_denied:
+                actions.append("No appeal draft: claim is not marked denied")
+            elif already_resolved:
+                actions.append("No appeal draft: claim already marked appealed/successful")
+            elif is_appealed:
+                actions.append("No new appeal draft: claim already in appealed state")
+            elif not model_gate:
+                actions.append("No appeal draft: experimental success/recovery gate not met")
 
         if high_fraud:
             actions.append("Flag for enhanced manual review (possible fraud risk — model estimate)")
             actions.append("Require supervisor sign-off before submission/appeal")
 
         if high_recon_risk:
-            actions.append("Route remittance mapping check before final closure (risk score — not an auto-match)")
+            actions.append(
+                "Route remittance mapping check before final closure "
+                "(risk score with known target-leakage limitation — not an auto-match)"
+            )
 
         summary = (
-            f"Appeal draft eligible={appealable} (denied={is_denied}, appealed={is_appealed}), "
-            f"fraud_high={high_fraud}, reconciliation_review={high_recon_risk}. "
+            f"Appeal draft eligible={appealable} (denied={is_denied}, appealed={is_appealed}, "
+            f"override_rejected={override_rejected}), fraud_high={high_fraud}, "
+            f"reconciliation_review={high_recon_risk}. "
             f"Estimates are experimental/synthetic-data only."
         )
         handoff = (
-            "Back-end recommendations generated. Human supervisor approval is required; "
+            "Back-end recommendations generated. Human supervisor review is required; "
             "this prototype does not persist approvals or submit to payers."
         )
 
@@ -129,16 +162,33 @@ class BackEndAgent:
             "metrics": {
                 "p_appeal_success": p_appeal_success,
                 "expected_recovery": expected_recovery,
+                "expected_recovery_definition": predictions.get(
+                    "expected_recovery_definition",
+                    "P(appeal_success) * predicted_paid_if_appeal_succeeds",
+                ),
                 "appealable": appealable,
                 "high_fraud": high_fraud,
                 "fraud_probability_improved": fraud_probability_improved,
                 "reconciliation_review_required": high_recon_risk,
                 "reconciliation_risk_probability": reconciliation_risk_probability,
                 "force_appeal": force_appeal,
+                "override_rejected": override_rejected,
                 "appeals_estimate_note": predictions.get(
                     "appeals_estimate_note",
                     "Experimental / synthetic-data estimate only.",
                 ),
             },
             "handoff": handoff,
+            "priority": (
+                1 if high_fraud else
+                2 if appealable else
+                3 if high_recon_risk else
+                5
+            ),
+            "priority_label": (
+                "HIGH: fraud review" if high_fraud else
+                "HIGH: appeal draft" if appealable else
+                "MEDIUM: reconciliation review" if high_recon_risk else
+                "LOW: monitor"
+            ),
         }

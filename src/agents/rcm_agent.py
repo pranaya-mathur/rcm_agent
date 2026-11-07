@@ -90,9 +90,15 @@ class AppealsAgent:
         # Legacy specialist — Coordinator uses BackEndAgent. Keep denial gating consistent.
         is_denied = bool(claim.get("is_denied", False))
         is_appealed = bool(claim.get("is_appealed", False))
+        appeal_success = bool(claim.get("appeal_success", False))
+        already_resolved = bool(is_appealed and appeal_success)
         is_high_yield = p_appeal_success >= success_threshold and expected_recovery > 0
-        appealable = ((is_denied and not is_appealed and is_high_yield) or force_appeal) and (
-            is_denied or force_appeal
+        # force_appeal cannot draft for non-denied or resolved claims.
+        appealable = bool(
+            is_denied
+            and not already_resolved
+            and not is_appealed
+            and (is_high_yield or force_appeal)
         )
 
         denial_reason = claim.get("denial_reason", "Unknown")
@@ -258,8 +264,8 @@ class CoordinatorAgent:
 
         # Human-in-the-loop guardrail (recommendation only — not a persisted approval workflow).
         action_items.append(
-            "HUMAN REVIEW REQUIRED: supervisor approval is recommended before any submission/appeal. "
-            "This demo does not persist approvals or submit to payers."
+            "HUMAN REVIEW REQUIRED: supervisor review is recommended before any submission/appeal. "
+            "This demo does not persist approvals, enforce access control, or submit to payers."
         )
 
         # Explicit non-learning step so demos do not imply online model updates.
@@ -272,11 +278,27 @@ class CoordinatorAgent:
             )
         )
 
-        recommendation = front_stage.get("recommendation", "Standard scrubbing + coding review")
         back_metrics = back_stage.get("metrics", {})
         mid_metrics = mid_stage.get("metrics", {})
         front_metrics = front_stage.get("metrics", {})
         appeal_letter = back_stage.get("artifacts", {}).get("appeal_letter")
+
+        # Consolidated, prioritized recommendation across all three stages.
+        recommendation = self._consolidated_recommendation(
+            front_stage=front_stage,
+            mid_stage=mid_stage,
+            back_stage=back_stage,
+            front_metrics=front_metrics,
+            mid_metrics=mid_metrics,
+            back_metrics=back_metrics,
+        )
+        steps.append(
+            AgentStep(
+                self.name,
+                "Consolidate",
+                f"Prioritized recommendation: {recommendation}",
+            )
+        )
 
         return AgentOutput(
             steps=steps,
@@ -289,8 +311,13 @@ class CoordinatorAgent:
                 "fraud_probability_improved": back_metrics.get("fraud_probability_improved", fraud_probability_improved),
                 "p_appeal_success": back_metrics.get("p_appeal_success", p_appeal_success),
                 "expected_recovery": back_metrics.get("expected_recovery", expected_recovery),
+                "expected_recovery_definition": back_metrics.get(
+                    "expected_recovery_definition",
+                    predictions.get("expected_recovery_definition"),
+                ),
                 "denial_risk_level": front_metrics.get("denial_risk_level", "LOW"),
                 "appealable": back_metrics.get("appealable", False),
+                "override_rejected": back_metrics.get("override_rejected", False),
                 "high_fraud": back_metrics.get("high_fraud", False),
                 "reconciliation_risk_probability": back_metrics.get(
                     "reconciliation_risk_probability", reconciliation_risk_probability
@@ -302,5 +329,46 @@ class CoordinatorAgent:
                 "stage_front_end": front_stage,
                 "stage_mid_cycle": mid_stage,
                 "stage_back_end": back_stage,
+                "consolidated_priority": back_stage.get("priority_label") or "see recommendation",
             },
         )
+
+    @staticmethod
+    def _consolidated_recommendation(
+        *,
+        front_stage: Dict[str, Any],
+        mid_stage: Dict[str, Any],
+        back_stage: Dict[str, Any],
+        front_metrics: Dict[str, Any],
+        mid_metrics: Dict[str, Any],
+        back_metrics: Dict[str, Any],
+    ) -> str:
+        """
+        Build one prioritized recommendation from Front-End, Mid-Cycle, and Back-End.
+        Priority: fraud > appeal draft > high scrub/denial > coding QA > reconciliation > standard.
+        """
+        parts: List[str] = []
+        if back_metrics.get("high_fraud"):
+            parts.append("P1 Fraud: hold for enhanced manual review / supervisor sign-off")
+        if back_metrics.get("appealable"):
+            parts.append("P1 Appeals: prepare DRAFT appeal for human review (no auto-submit)")
+        denial_risk = front_metrics.get("denial_risk_level", "LOW")
+        if denial_risk == "HIGH" or float(front_metrics.get("mismatch_probability", 0) or 0) >= 0.7:
+            parts.append(
+                f"P2 Front-End: {front_stage.get('recommendation', 'high-risk scrubbing review')}"
+            )
+        elif denial_risk == "MEDIUM":
+            parts.append(f"P3 Front-End: {front_stage.get('recommendation', 'verify payer docs')}")
+        if mid_metrics.get("coding_review_required"):
+            parts.append("P2 Mid-Cycle: coding/documentation QA review required")
+        if back_metrics.get("reconciliation_review_required"):
+            parts.append(
+                "P3 Back-End: reconciliation review recommended "
+                "(model has known target-leakage limitation)"
+            )
+        if not parts:
+            parts.append(
+                front_stage.get("recommendation")
+                or "Standard path: proceed with routine scrubbing + coding review; human oversight still required"
+            )
+        return " | ".join(parts)

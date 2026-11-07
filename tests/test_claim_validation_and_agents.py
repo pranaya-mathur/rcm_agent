@@ -99,7 +99,7 @@ def test_no_appeal_for_already_resolved():
     assert out["metrics"]["appealable"] is False
 
 
-def test_force_appeal_override_is_labeled():
+def test_force_appeal_override_rejected_for_non_denied():
     claim = derive_claim_fields(_base_payload(is_denied=False))
     preds = {
         "fraud_probability_improved": 0.1,
@@ -108,8 +108,9 @@ def test_force_appeal_override_is_labeled():
         "reconciliation_risk_probability": 0.1,
     }
     out = BackEndAgent().run(claim, preds, force_appeal=True)
-    assert out["metrics"]["appealable"] is True
-    assert any("override" in a.lower() for a in out["actions"])
+    assert out["metrics"]["appealable"] is False
+    assert out["metrics"].get("override_rejected") is True
+    assert any("rejected" in a.lower() for a in out["actions"])
 
 
 def test_coordinator_review_gate_not_online_learning():
