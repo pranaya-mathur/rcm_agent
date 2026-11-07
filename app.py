@@ -26,6 +26,7 @@ def main():
         "Enterprise-wide intelligence across Patient Access, Mid-Cycle Integrity, and Back-End Recovery."
     )
     live = get_live_stats()
+    st.caption("Synthetic demo dataset — figures are prototype analytics, not production KPIs.")
     st.markdown(
         (
             "🟦 **Live DB Intake (Demo Mode):** "
@@ -35,6 +36,7 @@ def main():
                 if live.get("last_claim_id") is not None
                 else ""
             )
+            + " *(banner reads SQLite directly; KPI tables below use cached merged data)*"
         )
     )
 
@@ -44,16 +46,17 @@ def main():
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         total_billed = master["claim_amount"].sum()
-        metric_card("Total Billed AR", fmt_dollar(total_billed), "8.2% vs Last Month", delta_up=True)
+        outstanding = float((master["claim_amount"] - master["paid_amount"]).clip(lower=0).sum())
+        metric_card("Total Billed (claims)", fmt_dollar(total_billed), "sum of claim_amount", delta_up=True)
     with c2:
         denial_rate = master["is_denied"].mean() * 100
-        metric_card("Net Denial Rate", f"{denial_rate:.1f}%", "-2.4% reduction", delta_up=False)
+        metric_card("Denial Rate", f"{denial_rate:.1f}%", "dataset rate (synthetic)", delta_up=False)
     with c3:
         clean_rate = master["is_clean_claim"].mean() * 100
-        metric_card("Clean Claim Rate", f"{clean_rate:.1f}%", "Target: 95%+", delta_up=True)
+        metric_card("Clean Claim Rate", f"{clean_rate:.1f}%", f"Outstanding gap {fmt_dollar(outstanding)}", delta_up=True)
     with c4:
         recovery = master[master["appeal_success"] == True]["paid_amount"].sum()
-        metric_card("Appeal Recovery", fmt_dollar(recovery), "ML-Prioritized", delta_up=True)
+        metric_card("Appeal Recovery (paid)", fmt_dollar(recovery), "from successful appeal rows", delta_up=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -63,25 +66,28 @@ def main():
     col_left, col_right = st.columns([1.5, 1])
 
     with col_left:
-        st.markdown("### 📊 AR Aging Distribution")
-        # Simulate AR buckets if not explicitly in data
-        # In real world: 0-30, 31-60, 61-90, 91-120, 120+
-        aging_data = pd.DataFrame({
-            "Bucket": ["0-30 Days", "31-60 Days", "61-90 Days", "91-120 Days", "120+ Days"],
-            "Amount": [
-                master["claim_amount"].sum() * 0.45,
-                master["claim_amount"].sum() * 0.25,
-                master["claim_amount"].sum() * 0.15,
-                master["claim_amount"].sum() * 0.10,
-                master["claim_amount"].sum() * 0.05
-            ]
-        })
+        st.markdown("### 📊 Claim Cycle Duration (from events)")
+        st.caption(
+            "This chart uses processing cycle days from the events timeline — "
+            "it is **not** true outstanding AR aging inventory."
+        )
+        if events_tl is not None and len(events_tl) and "total_cycle_days" in events_tl.columns:
+            cycle = events_tl[["claim_id", "total_cycle_days"]].dropna().merge(
+                master[["claim_id", "claim_amount"]], on="claim_id", how="inner"
+            )
+            bins = [-0.1, 30, 60, 90, 120, 10_000]
+            labels = ["0-30 Days", "31-60 Days", "61-90 Days", "91-120 Days", "120+ Days"]
+            cycle["Bucket"] = pd.cut(cycle["total_cycle_days"], bins=bins, labels=labels)
+            aging_data = cycle.groupby("Bucket", observed=False)["claim_amount"].sum().reset_index()
+            aging_data.columns = ["Bucket", "Amount"]
+        else:
+            aging_data = pd.DataFrame({"Bucket": ["Unavailable"], "Amount": [0.0]})
         fig_aging = px.bar(
             aging_data, x="Amount", y="Bucket", orientation="h",
             color="Bucket", color_discrete_sequence=px.colors.sequential.Blues_r,
             text_auto=True
         )
-        plotly_layout(fig_aging, "Active AR Inventory by Aging Bucket", 400)
+        plotly_layout(fig_aging, "Billed amount by claim cycle-duration bucket", 400)
         fig_aging.update_traces(textfont_size=12, textposition="outside", cliponaxis=False)
         st.plotly_chart(fig_aging, use_container_width=True)
 
@@ -121,7 +127,10 @@ def main():
     # ──────────────────────────────────────────────
     #  System Strategy
     # ──────────────────────────────────────────────
-    st.info("💡 **Strategy Insight:** High AR volume in the 61-90 day bucket for 'UHC' indicates a likely bottleneck in medical necessity documentation. AI Denial Predictor has identified 124 claims for high-priority clinical review.")
+    st.info(
+        "💡 **Demo note:** Use Denial Predictor, Smart Scrubbing, Agentic Orchestrator, and RCM AI Copilot "
+        "for claim-level walkthroughs. Insights on this page are descriptive analytics over synthetic data only."
+    )
 
 if __name__ == "__main__":
     main()

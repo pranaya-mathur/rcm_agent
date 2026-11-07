@@ -47,23 +47,41 @@ function App() {
     denialRows: defaultDenialRows,
     appealRows: defaultAppealRows,
     meta: {},
+    notice: null,
   });
   const [status, setStatus] = React.useState("loading");
 
   React.useEffect(() => {
-    fetch("http://localhost:8001/api/summary")
-      .then((r) => r.json())
-      .then((json) => {
+    fetch("http://127.0.0.1:8001/api/summary")
+      .then(async (r) => {
+        if (!r.ok) {
+          throw new Error(`HTTP ${r.status}`);
+        }
+        const json = await r.json();
+        if (!json || json.ok === false) {
+          throw new Error((json && json.error) || "API returned an error payload");
+        }
         setData({
           kpis: json.kpis || defaultKpis,
           scrubBars: json.scrubBars || defaultScrubBars,
           denialRows: json.denialRows || defaultDenialRows,
           appealRows: json.appealRows || defaultAppealRows,
           meta: json.meta || {},
+          notice: json.data_notice || null,
         });
         setStatus("live");
       })
-      .catch(() => setStatus("fallback"));
+      .catch(() => {
+        setData({
+          kpis: defaultKpis,
+          scrubBars: defaultScrubBars,
+          denialRows: defaultDenialRows,
+          appealRows: defaultAppealRows,
+          meta: {},
+          notice: "Backend unavailable — showing built-in MOCK values (not live data).",
+        });
+        setStatus("fallback");
+      });
   }, []);
 
   return e("div", { className: "container" }, [
@@ -72,8 +90,11 @@ function App() {
         e("h1", { className: "title" }, "AI-Powered RCM Command Center"),
         e("p", { className: "subtitle" }, "React prototype aligned to PDF: denial prevention, coding, appeals, fraud, agentic actions."),
       ]),
-      e("span", { className: `badge ${status === "live" ? "success" : "warn"}` }, status === "live" ? "Live API" : (status === "loading" ? "Loading..." : "Fallback Data")),
+      e("span", { className: `badge ${status === "live" ? "success" : "warn"}` }, status === "live" ? "Live API" : (status === "loading" ? "Loading..." : "Mock / Fallback Data")),
     ]),
+    data.notice
+      ? e("p", { className: "footer-note", style: { marginTop: 8 } }, data.notice)
+      : null,
 
     e("div", { className: "grid kpis" },
       data.kpis.map((k) =>
@@ -149,29 +170,32 @@ function App() {
         ]),
       }),
       e(Card, {
-        title: "Fraud + Forecast",
-        extra: e("span", { className: "badge success" }, "Phase 5 + Bonus"),
+        title: "Fraud snapshot",
+        extra: e("span", { className: "badge success" }, "Synthetic"),
         children: e("div", null, [
-          e("p", { style: { marginTop: 0, color: "var(--muted)" } }, "Improved fraud probability (supervised + anomaly blend)"),
+          e("p", { style: { marginTop: 0, color: "var(--muted)" } },
+            status === "live"
+              ? `Live meta fraud high-risk %: ${(data.meta && data.meta.fraud_high_risk_pct != null) ? data.meta.fraud_high_risk_pct : "n/a"}`
+              : "Mock card — backend not connected. Values below are illustrative only."
+          ),
           e("div", { className: "bars" }, [
             e("div", { className: "bar-row" }, [
               e("div", { className: "bar-label" }, "Fraud High-Risk"),
-              e("div", { className: "bar-track" }, e("div", { className: "bar-fill", style: { width: "29%" } })),
-              e("div", { className: "bar-val" }, "2.9%"),
-            ]),
-            e("div", { className: "bar-row" }, [
-              e("div", { className: "bar-label" }, "Forecast Confidence"),
-              e("div", { className: "bar-track" }, e("div", { className: "bar-fill", style: { width: "85%" } })),
-              e("div", { className: "bar-val" }, "85%"),
+              e("div", { className: "bar-track" }, e("div", { className: "bar-fill", style: {
+                width: `${Math.min(100, Number((data.meta && data.meta.fraud_high_risk_pct) || 0))}%`
+              } })),
+              e("div", { className: "bar-val" },
+                `${(data.meta && data.meta.fraud_high_risk_pct != null) ? data.meta.fraud_high_risk_pct : (status === "live" ? "0" : "n/a")}%`
+              ),
             ]),
           ]),
-          e("p", { className: "footer-note" }, "What-if example: reducing 'Missing docs' denials by 50% projects notable revenue lift."),
+          e("p", { className: "footer-note" }, "Forecast what-if scenarios are not computed in this React prototype."),
         ]),
       }),
     ]),
 
     e("p", { className: "footer-note" },
-      `Data source: ${status === "live" ? "http://localhost:8001/api/summary" : "built-in mock data"}`
+      `Data source: ${status === "live" ? "http://127.0.0.1:8001/api/summary (live)" : "built-in MOCK data (not live)"}`
     ),
   ]);
 }

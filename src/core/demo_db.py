@@ -38,6 +38,9 @@ def init_db() -> None:
                 is_denied INTEGER,
                 is_appealed INTEGER,
                 appeal_success INTEGER,
+                cpt_icd_mismatch INTEGER,
+                high_amount_flag INTEGER,
+                strict_insurance_flag INTEGER,
                 cpt_codes_json TEXT,
                 total_cpt_amount REAL,
                 clinical_notes TEXT,
@@ -47,41 +50,59 @@ def init_db() -> None:
             )
             """
         )
+        # Lightweight migrations for older demo DBs.
+        cols = {r[1] for r in con.execute("PRAGMA table_info(live_claim_payloads)").fetchall()}
+        for col, ddl in (
+            ("cpt_icd_mismatch", "INTEGER DEFAULT 0"),
+            ("high_amount_flag", "INTEGER DEFAULT 0"),
+            ("strict_insurance_flag", "INTEGER DEFAULT 0"),
+        ):
+            if col not in cols:
+                con.execute(f"ALTER TABLE live_claim_payloads ADD COLUMN {col} {ddl}")
 
 
 def db_signature() -> float:
-    """
-    File mtime marker for Streamlit cache invalidation.
-    """
+    """File mtime marker for Streamlit cache invalidation."""
     if not os.path.exists(DB_PATH):
         return 0.0
     return os.path.getmtime(DB_PATH)
 
 
 def upsert_live_claim(payload: Dict[str, Any]) -> None:
+    """Idempotent upsert keyed by claim_id."""
     init_db()
     claim_id = int(payload.get("claim_id"))
-    cpt_codes = payload.get("cpt_codes", [])
+    # Ensure unique encounter/patient defaults per claim to avoid join collisions.
+    encounter_id = int(payload.get("encounter_id") or (900_000_000 + claim_id))
+    patient_id = int(payload.get("patient_id") or (800_000_000 + claim_id))
+    cpt_codes = payload.get("cpt_codes", []) or []
     cpt_codes_json = json.dumps([str(x).strip() for x in cpt_codes if str(x).strip()])
+    claim_amount = float(payload.get("claim_amount", 0.0) or 0.0)
+    high_amount = payload.get("high_amount_flag")
+    if high_amount is None:
+        high_amount = claim_amount > 1500
 
     row = (
         claim_id,
-        int(payload.get("encounter_id", 0) or 0),
-        int(payload.get("patient_id", 0) or 0),
+        encounter_id,
+        patient_id,
         str(payload.get("insurance", "Unknown")),
-        str(payload.get("visit_type", "OP")),
+        str(payload.get("visit_type", "OPD")),
         str(payload.get("icd_code", "Unknown")),
         str(payload.get("gender", "U")),
         int(payload.get("age", 0) or 0),
-        float(payload.get("claim_amount", 0.0) or 0.0),
+        claim_amount,
         float(payload.get("paid_amount", 0.0) or 0.0),
         float(payload.get("fraud_score", 0.0) or 0.0),
         str(payload.get("denial_reason", "None")),
         int(bool(payload.get("is_denied", False))),
         int(bool(payload.get("is_appealed", False))),
         int(bool(payload.get("appeal_success", False))),
+        int(bool(payload.get("cpt_icd_mismatch", False))),
+        int(bool(high_amount)),
+        int(bool(payload.get("strict_insurance_flag", False))),
         cpt_codes_json,
-        float(payload.get("total_cpt_amount", payload.get("claim_amount", 0.0)) or 0.0),
+        float(payload.get("total_cpt_amount", claim_amount) or claim_amount),
         str(payload.get("clinical_notes", "") or ""),
         json.dumps(payload, ensure_ascii=False),
     )
@@ -92,8 +113,9 @@ def upsert_live_claim(payload: Dict[str, Any]) -> None:
             INSERT INTO live_claim_payloads (
                 claim_id, encounter_id, patient_id, insurance, visit_type, icd_code, gender, age,
                 claim_amount, paid_amount, fraud_score, denial_reason, is_denied, is_appealed,
-                appeal_success, cpt_codes_json, total_cpt_amount, clinical_notes, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                appeal_success, cpt_icd_mismatch, high_amount_flag, strict_insurance_flag,
+                cpt_codes_json, total_cpt_amount, clinical_notes, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(claim_id) DO UPDATE SET
                 encounter_id=excluded.encounter_id,
                 patient_id=excluded.patient_id,
@@ -109,6 +131,9 @@ def upsert_live_claim(payload: Dict[str, Any]) -> None:
                 is_denied=excluded.is_denied,
                 is_appealed=excluded.is_appealed,
                 appeal_success=excluded.appeal_success,
+                cpt_icd_mismatch=excluded.cpt_icd_mismatch,
+                high_amount_flag=excluded.high_amount_flag,
+                strict_insurance_flag=excluded.strict_insurance_flag,
                 cpt_codes_json=excluded.cpt_codes_json,
                 total_cpt_amount=excluded.total_cpt_amount,
                 clinical_notes=excluded.clinical_notes,
@@ -122,42 +147,65 @@ def upsert_live_claim(payload: Dict[str, Any]) -> None:
 def load_live_frames() -> Dict[str, pd.DataFrame]:
     """
     Return live-data DataFrames aligned to core pipeline table names.
+    Preserves payer, age, gender, patient, encounter, clinical notes, ICD and CPT.
     """
     init_db()
     with _connect() as con:
         live = pd.read_sql_query("SELECT * FROM live_claim_payloads", con)
 
+    empty = {
+        "claims": pd.DataFrame(),
+        "patients": pd.DataFrame(),
+        "encounters": pd.DataFrame(),
+        "payments": pd.DataFrame(),
+        "denials": pd.DataFrame(),
+        "appeals": pd.DataFrame(),
+        "fraud": pd.DataFrame(),
+        "scrubbing": pd.DataFrame(),
+        "icd": pd.DataFrame(),
+        "cpt_lines": pd.DataFrame(),
+    }
     if live.empty:
-        return {
-            "claims": pd.DataFrame(),
-            "encounters": pd.DataFrame(),
-            "payments": pd.DataFrame(),
-            "denials": pd.DataFrame(),
-            "appeals": pd.DataFrame(),
-            "fraud": pd.DataFrame(),
-            "scrubbing": pd.DataFrame(),
-            "icd": pd.DataFrame(),
-            "cpt_lines": pd.DataFrame(),
-        }
+        return empty
 
     def _bool_series(col: str) -> pd.Series:
+        if col not in live.columns:
+            return pd.Series([False] * len(live))
         return live[col].fillna(0).astype(int).astype(bool)
 
-    claims = live[["claim_id", "encounter_id", "claim_amount"]].copy()
-    encounters = live[["encounter_id", "patient_id", "visit_type"]].copy()
-    encounters["clinical_notes"] = live["clinical_notes"].fillna("")
+    claims = live[["claim_id", "encounter_id", "claim_amount", "insurance"]].copy()
+
+    patients = live[["patient_id", "age", "gender", "insurance"]].drop_duplicates(
+        subset=["patient_id"], keep="last"
+    ).copy()
+
+    encounters = live[["encounter_id", "patient_id", "visit_type"]].drop_duplicates(
+        subset=["encounter_id"], keep="last"
+    ).copy()
+    # Clinical notes: keep latest note per encounter from live rows
+    notes_map = (
+        live.sort_values("claim_id")
+        .drop_duplicates(subset=["encounter_id"], keep="last")
+        .set_index("encounter_id")["clinical_notes"]
+        .fillna("")
+    )
+    encounters["clinical_notes"] = encounters["encounter_id"].map(notes_map).fillna("")
+
     payments = live[["claim_id", "paid_amount"]].copy()
     denials = live.loc[_bool_series("is_denied"), ["claim_id", "denial_reason"]].copy()
-    appeals = live.loc[_bool_series("is_appealed"), ["claim_id", "appeal_success"]].copy()
-    appeals["success"] = appeals["appeal_success"].astype(bool)
+    appeals = live.loc[_bool_series("is_appealed"), ["claim_id"]].copy()
+    if len(appeals):
+        appeals["success"] = live.loc[_bool_series("is_appealed"), "appeal_success"].astype(bool).values
+    else:
+        appeals = pd.DataFrame(columns=["claim_id", "success"])
 
     fraud = live[["claim_id", "fraud_score"]].copy()
     fraud["fraud_flag"] = (fraud["fraud_score"] >= 0.8).astype(int)
 
     scrubbing = live[["claim_id"]].copy()
-    scrubbing["cpt_icd_mismatch"] = False
-    scrubbing["high_amount_flag"] = (live["claim_amount"].fillna(0) > 1500).astype(bool).values
-    scrubbing["strict_insurance_flag"] = False
+    scrubbing["cpt_icd_mismatch"] = _bool_series("cpt_icd_mismatch").values
+    scrubbing["high_amount_flag"] = _bool_series("high_amount_flag").values
+    scrubbing["strict_insurance_flag"] = _bool_series("strict_insurance_flag").values
 
     icd = live[["claim_id", "icd_code"]].copy()
 
@@ -171,11 +219,18 @@ def load_live_frames() -> Dict[str, pd.DataFrame]:
             continue
         per_amt = float(getattr(r, "total_cpt_amount", 0.0) or 0.0) / max(len(codes), 1)
         for code in codes:
-            cpt_rows.append({"claim_id": int(r.claim_id), "cpt_code": str(code), "amount": per_amt})
+            # Normalize CPT codes to int-like strings to match historical feature columns.
+            code_s = str(code).strip()
+            try:
+                code_s = str(int(float(code_s)))
+            except Exception:
+                pass
+            cpt_rows.append({"claim_id": int(r.claim_id), "cpt_code": code_s, "amount": per_amt})
     cpt_lines = pd.DataFrame(cpt_rows, columns=["claim_id", "cpt_code", "amount"])
 
     return {
         "claims": claims,
+        "patients": patients,
         "encounters": encounters,
         "payments": payments,
         "denials": denials,
@@ -188,9 +243,7 @@ def load_live_frames() -> Dict[str, pd.DataFrame]:
 
 
 def get_live_stats() -> Dict[str, Any]:
-    """
-    Small summary for command-center demo banner.
-    """
+    """Small summary for command-center demo banner."""
     init_db()
     with _connect() as con:
         row = con.execute(
@@ -211,4 +264,3 @@ def get_live_stats() -> Dict[str, Any]:
         "last_claim_id": last_claim_id,
         "last_updated_at": last_updated_at,
     }
-

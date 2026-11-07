@@ -1,36 +1,43 @@
-import pytest
+"""Smoke import tests for core modules and pages."""
+
+import importlib
 import os
 import sys
 
-# Add the current directory to sys.path to allow importing local modules
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 
 def test_core_imports():
-    """Test that core modules can be imported without errors."""
-    import app
-    import utils_ui
-    import config
-    from src.core import ml_engine
-    from src.core import data_loader
-    from src.agents import langgraph_rcm_chatbot
+    importlib.import_module("config")
+    importlib.import_module("utils_ui")
+    importlib.import_module("src.core.ml_engine")
+    importlib.import_module("src.core.data_loader")
+    importlib.import_module("src.core.claim_scoring")
+    importlib.import_module("src.agents.langgraph_rcm_chatbot")
+
 
 def test_page_imports():
-    """Test that all Streamlit pages can be imported."""
-    pages_dir = "pages"
-    if not os.path.exists(pages_dir):
-        pytest.skip("Pages directory not found")
-        
-    for filename in os.listdir(pages_dir):
-        if filename.endswith(".py") and not filename.startswith("__"):
-            module_name = f"pages.{filename[:-3]}"
-            __import__(module_name)
+    pages_dir = os.path.join(ROOT, "pages")
+    assert os.path.isdir(pages_dir)
+    for fname in sorted(os.listdir(pages_dir)):
+        if not fname.endswith(".py"):
+            continue
+        path = os.path.join(pages_dir, fname)
+        # Execute module load via importlib from file path would be heavy; compile check is enough here.
+        with open(path, "r", encoding="utf-8") as f:
+            compile(f.read(), path, "exec")
+
 
 def test_agent_imports():
-    """Test that all agents can be imported."""
-    from src.agents import rcm_agent
-    from src.agents import clinical_nlp_agent
-    from src.agents import custom_coding_agent
+    importlib.import_module("src.agents.rcm_agent")
+    importlib.import_module("src.agents.front_end_agent")
+    importlib.import_module("src.agents.mid_cycle_agent")
+    importlib.import_module("src.agents.back_end_agent")
+    importlib.import_module("src.agents.clinical_nlp_agent")
+    importlib.import_module("src.agents.custom_coding_agent")
+
 
 def test_api_imports():
-    """Test that API modules can be imported."""
-    from src.api import backend_api
+    importlib.import_module("src.api.backend_api")

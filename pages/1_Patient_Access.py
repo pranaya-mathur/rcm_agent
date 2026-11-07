@@ -81,56 +81,70 @@ def page_patient_access_eligibility():
         st.dataframe(high_elig, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    st.markdown("### 💬 Patient Access AI (Groq-Powered)")
-    
+    st.markdown("### 💬 Patient Access AI Assistant")
+    st.caption(
+        "Uses the configured LLM provider. Context is **eligibility risk** (proxy model), "
+        "not denial probability. Synthetic demo data — human review required."
+    )
+
+    from config import llm_provider_label, active_llm_model
+    st.sidebar.caption(f"LLM: {llm_provider_label()} / {active_llm_model()}")
+
     chat_key = "pa_ai_messages"
     if chat_key not in st.session_state:
         st.session_state[chat_key] = [
             {
                 "role": "assistant",
-                "content": "I am your AI Patient Access specialist. I can help with insurance match verification, eligibility risk analysis, and patient lookups using Real-time Groq Reasoning."
+                "content": (
+                    "I am your Patient Access assistant. I can discuss insurance match and "
+                    "eligibility-risk model estimates for the selected synthetic claim. "
+                    "I will not invent clinical or payer confirmations."
+                ),
             }
         ]
 
-    # Use a specific patient context for the chat if selected
     selected_claim_id = st.selectbox("Select Claim ID to Analyze", options=df["claim_id"].head(50).tolist())
-    
+
     for m in st.session_state[chat_key]:
-        with st.chat_message(m["role"]): st.markdown(m["content"])
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
 
     if q := st.chat_input("Ask about eligibility risk or patient registration..."):
         st.session_state[chat_key].append({"role": "user", "content": q})
-        with st.chat_message("user"): st.markdown(q)
-        
-        # Build context for the agent
+        with st.chat_message("user"):
+            st.markdown(q)
+
         claim_rows = df[df["claim_id"] == selected_claim_id]
         if claim_rows.empty:
             ans = "I couldn't find data for that claim ID."
         else:
             claim_row = claim_rows.iloc[0].to_dict()
-            with st.status("🧠 AI Patient Access Reasoning...", expanded=False) as status:
-                # Eligibility score for this claim
+            with st.status("🧠 Patient Access reasoning...", expanded=False) as status:
                 elig_risk = float(claim_row["eligibility_risk"])
                 insights = {
                     "eligibility_risk": elig_risk,
                     "insurance_match": bool(claim_row["insurance_match"]),
-                    "denial_probability": elig_risk, # repurposed for context
+                    # Do NOT substitute eligibility for denial probability.
                     "mismatch_probability": 0.0,
                     "fraud_probability_improved": 0.0,
-                    "topics": ["patient access", "eligibility"]
                 }
                 state = {
                     "claim_id": selected_claim_id,
                     "user_message": q,
                     "claim": claim_row,
                     "insights": insights,
+                    "mode": "eligibility_assist",
                 }
                 res = rcm_langgraph_app.invoke(state)
                 ans = res.get("response", "Error processing request.")
-                status.update(label="✅ Analysis Complete", state="complete")
+                if res.get("error"):
+                    status.update(label="⚠️ LLM provider error — showing fallback notice", state="error")
+                else:
+                    status.update(label="✅ Analysis complete (human review still required)", state="complete")
 
         st.session_state[chat_key].append({"role": "assistant", "content": ans})
-        with st.chat_message("assistant"): st.markdown(ans)
+        with st.chat_message("assistant"):
+            st.markdown(ans)
 
 if __name__ == "__main__":
     page_patient_access_eligibility()

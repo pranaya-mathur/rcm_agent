@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from src.core.data_loader import load_all, build_master, build_events_timeline, get_cpt_summary
+from src.core.demo_db import db_signature
 
 # ──────────────────────────────────────────────
 #  UI Colors & Theme
@@ -100,10 +101,11 @@ def metric_card(label: str, value: str, delta: str = "", delta_up: bool = True):
     )
 
 @st.cache_data(show_spinner=False)
-def get_data():
-    master = build_master()
-    events = build_events_timeline()
-    raw = load_all()
+def get_data(db_sig: float = 0.0):
+    """db_sig is hashed so live SQLite upserts invalidate Streamlit caches."""
+    master = build_master(db_sig=db_sig)
+    events = build_events_timeline(db_sig=db_sig)
+    raw = load_all(db_sig=db_sig)
     return master, events, raw
 
 def sidebar_status(master):
@@ -147,6 +149,7 @@ def shared_page_init():
     load_css()
     sidebar_branding()
     with st.spinner("🔄 Synchronizing RCM Assets..."):
-        master, events_tl, raw = get_data()
+        master, events_tl, raw = get_data(db_sig=db_signature())
+    st.sidebar.caption("Dataset: synthetic demo CSVs (+ live SQLite if present)")
     sidebar_status(master)
     return master, events_tl, raw
